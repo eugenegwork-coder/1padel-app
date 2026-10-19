@@ -1,0 +1,30 @@
+[
+  {
+    "id": 90101, "name": "Americano · тестовый турнир", "club": {"id": 1, "name": "Club de prueba", "address": "Dirección de prueba"},
+    "type": "AMERICANO", "modality": "INDIVIDUAL", "gender": "MASCULINO", "level": "C9",
+    "startsAt": "2026-10-24T15:00:00-03:00", "timeZone": "America/Argentina/Buenos_Aires", "duration": "3 h",
+    "price": 40000, "currency": "ARS", "status": "REGISTRO_ABIERTO", "capacity": 20, "capacityUnit": "PLAYERS", "occupied": 17, "available": 3, "waitlistCount": 0,
+    "registrationOpen": true, "cancellationDeadline": "2026-10-23T15:00:00-03:00", "description": "Вымышленное событие для проверки приложения.\nПартнёр меняется в каждом раунде.", "websiteUrl": "https://1-padel.com/torneo/90101"
+  },
+  {
+    "id": 90102, "name": "King of Court · тестовый турнир", "club": {"id": 1, "name": "Club de prueba", "address": "Dirección de prueba"},
+    "type": "KING_OF_COURT", "modality": "INDIVIDUAL", "gender": "FEMENINO", "level": "D7",
+    "startsAt": "2026-10-25T16:00:00-03:00", "timeZone": "America/Argentina/Buenos_Aires", "duration": "3 h",
+    "price": 45000, "currency": "ARS", "status": "REGISTRO_ABIERTO", "capacity": 20, "capacityUnit": "PLAYERS", "occupied": 20, "available": 0, "waitlistCount": 2,
+    "registrationOpen": true, "cancellationDeadline": null, "description": null, "websiteUrl": "https://1-padel.com/torneo/90102"
+  },
+  {
+    "id": 90103, "name": "Team Americano · тестовые пары", "club": {"id": 2, "name": "Club de prueba 2", "address": null},
+    "type": "AMERICANO_TEAMS", "modality": "DOBLES", "gender": "MIXTO", "level": "Suma 14",
+    "startsAt": "2026-10-25T18:00:00-03:00", "timeZone": "America/Argentina/Buenos_Aires", "duration": "4 h",
+    "price": 80000, "currency": "ARS", "status": "REGISTRO_ABIERTO", "capacity": 16, "capacityUnit": "PAIRS", "occupied": 11, "available": 5, "waitlistCount": 0,
+    "registrationOpen": true, "cancellationDeadline": null, "description": null, "websiteUrl": "https://1-padel.com/torneo/90103"
+  },
+  {
+    "id": 90104, "name": "Clínica · тестовая тренировка", "club": {"id": 2, "name": "Club de prueba 2", "address": null},
+    "type": "PADEL_CLINIC", "modality": "INDIVIDUAL", "gender": "MIXTO", "level": "C8",
+    "startsAt": "2026-10-26T19:00:00-03:00", "timeZone": "America/Argentina/Buenos_Aires", "duration": "2 h",
+    "price": 30000, "currency": "ARS", "status": "PUBLICADO", "capacity": 12, "capacityUnit": "PLAYERS", "occupied": 0, "available": 12, "waitlistCount": 0,
+    "registrationOpen": false, "cancellationDeadline": null, "description": null, "websiteUrl": "https://1-padel.com/torneo/90104"
+  }
+]
