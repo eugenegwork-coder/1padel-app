@@ -1,0 +1,262 @@
+diff --git a/mobile-app/src/browserRefreshStore.ts b/mobile-app/src/browserRefreshStore.ts
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/src/browserRefreshStore.ts
+@@ -0,0 +1,29 @@
++import { AuthError } from './auth.ts';
++
++// Отдельный ключ приложения: выход не затрагивает другие данные сайта.
++export const browserRefreshKey = 'onepadel.app.refresh.v1';
++type RefreshStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
++
++// Только refresh-токен. Пароль, профиль, мероприятия и access-токен не сохраняются.
++// Хранилище читается при обращении: Safari может запретить доступ к localStorage.
++export function createBrowserRefreshStore(getStorage: () => RefreshStorage | null, secure: boolean) {
++  return {
++    async get(): Promise<string | null> {
++      if (!secure) return null;
++      try { return getStorage()?.getItem(browserRefreshKey) || null; }
++      catch { throw new AuthError('STORAGE'); }
++    },
++    async set(token: string | null): Promise<void> {
++      if (token && !secure) throw new AuthError('INSECURE');
++      try {
++        const storage = getStorage();
++        if (!storage) {
++          if (token) throw new AuthError('STORAGE');
++          return;
++        }
++        if (token) storage.setItem(browserRefreshKey, token);
++        else storage.removeItem(browserRefreshKey);
++      } catch { throw new AuthError('STORAGE'); }
++    },
++  };
++}
+diff --git a/mobile-app/src/AuthContext.tsx b/mobile-app/src/AuthContext.tsx
+--- a/mobile-app/src/AuthContext.tsx
++++ b/mobile-app/src/AuthContext.tsx
+@@ -2,14 +2,16 @@
+ import { Platform } from 'react-native';
+ import * as SecureStore from 'expo-secure-store';
+ import { AuthError, createAuthClient, parseSessionFragment } from './auth';
++import { createBrowserRefreshStore } from './browserRefreshStore';
+ import type { Profile } from './auth';
+ 
+ const secureKey = 'onepadel.refresh.v1';
+ export const secureAuthContext = Platform.OS !== 'web' || (typeof window !== 'undefined' && (window.location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(window.location.hostname)));
++const browserStore = createBrowserRefreshStore(() => typeof window === 'undefined' ? null : window.localStorage, secureAuthContext);
+ const store = {
+-  async get() { return Platform.OS === 'web' ? null : SecureStore.getItemAsync(secureKey); },
++  async get() { return Platform.OS === 'web' ? browserStore.get() : SecureStore.getItemAsync(secureKey); },
+   async set(token: string | null) {
+-    if (Platform.OS === 'web') return; // Браузерные токены только в памяти текущей вкладки.
++    if (Platform.OS === 'web') return browserStore.set(token);
+     if (token) await SecureStore.setItemAsync(secureKey, token, { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY });
+     else await SecureStore.deleteItemAsync(secureKey);
+   },
+diff --git a/mobile-app/src/auth.ts b/mobile-app/src/auth.ts
+--- a/mobile-app/src/auth.ts
++++ b/mobile-app/src/auth.ts
+@@ -185,7 +185,14 @@
+     catch (error) { if (error instanceof AuthError && error.code === 'PLAYER_REQUIRED') { await clear(); } throw error; }
+   }
+   return {
+-    async restore() { if (!(await store.get())) return null; await refresh(); return me(); },
++    async restore() {
++      const started = epoch;
++      const token = await store.get();
++      if (started !== epoch) throw new AuthError('CANCELLED');
++      if (!token) return null;
++      await refresh();
++      return me();
++    },
+     async login(email: string, password: string) {
+       const started = ++epoch; refreshTask = null;
+       await accept(parseSession(await raw('/api/auth/login', { email: email.trim(), password }, undefined, 'INVALID_CREDENTIALS')), started);
+diff --git a/mobile-app/src/LoginScreen.tsx b/mobile-app/src/LoginScreen.tsx
+--- a/mobile-app/src/LoginScreen.tsx
++++ b/mobile-app/src/LoginScreen.tsx
+@@ -192,7 +192,7 @@
+           <TouchableOpacity accessibilityRole="button" accessibilityLabel={showPassword ? `${t.hide}: ${t.password}` : `${t.show}: ${t.password}`} onPress={() => setShowPassword(value => !value)} style={styles.passwordToggle}><Text style={styles.toggleText}>{showPassword ? t.hide : t.show}</Text></TouchableOpacity>
+         </View>
+         {error && <Text accessibilityRole="alert" style={styles.error}>{error === 'email' ? t.emailError : error === 'password' ? t.passwordError : authErrorText(language, error)}</Text>}
+-        {auth.restoreError && <TouchableOpacity accessibilityRole="button" onPress={() => void auth.retryRestore()} style={styles.guest}><Text style={styles.guestText}>{t.restore}</Text></TouchableOpacity>}
++        {auth.restoreError && <View><Text accessibilityRole="alert" style={styles.error}>{authErrorText(language, auth.restoreError)}</Text><TouchableOpacity accessibilityRole="button" disabled={auth.restoring} onPress={() => void auth.retryRestore()} style={styles.guest}><Text style={styles.guestText}>{t.restore}</Text></TouchableOpacity></View>}
+         <TouchableOpacity accessibilityRole="button" disabled={busy || auth.restoring || !secureAuthContext} accessibilityState={{ disabled: busy || auth.restoring || !secureAuthContext }} onPress={() => void signIn(false)} style={[styles.submit, (busy || auth.restoring || !secureAuthContext) && { opacity: 0.5 }]}><Text style={styles.submitText}>{busy ? t.busy : t.signIn}</Text></TouchableOpacity>
+       </View>
+       <View style={styles.registerRow}><Text style={styles.registerText}>{t.newAccount}</Text><TouchableOpacity accessibilityRole="link" onPress={() => Linking.openURL('https://1-padel.com/players/registro')} style={styles.registerButton}><Text style={styles.registerLink}>{t.createAccount}</Text></TouchableOpacity></View>
+diff --git a/mobile-app/tests/sessionPersistence.test.mjs b/mobile-app/tests/sessionPersistence.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/tests/sessionPersistence.test.mjs
+@@ -0,0 +1,125 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++import { createAuthClient, parseSessionFragment } from '../src/auth.ts';
++import { browserRefreshKey, createBrowserRefreshStore } from '../src/browserRefreshStore.ts';
++
++function device() {
++  const values = new Map([['unrelated-site-data', 'keep']]);
++  return { values, getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
++}
++const player = { id: 4, email: 'player@example.test', nombreCompleto: 'Test Player' };
++const profile = { id: 4, email: player.email, name: player.nombreCompleto };
++const tokens = name => ({ accessToken: `access-${name}`, refreshToken: `refresh-${name}`, expiresIn: 60000 });
++const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
++function backend() {
++  const calls = [];
++  return { calls, fetchImpl: async (url, init) => {
++    calls.push({ url, init });
++    if (url.endsWith('/login')) return json(tokens('login'));
++    if (url.endsWith('/refresh')) return json(tokens('restored'));
++    if (url.endsWith('/me')) return json(player);
++    if (url.endsWith('/tournaments')) return json({ upcoming: [], historical: [] });
++    throw new Error('Unexpected endpoint');
++  } };
++}
++
++test('email sign-in survives closing the client: a new instance refreshes and loads own profile and events', async () => {
++  const saved = device(); const api = backend();
++  const first = createAuthClient({ store: createBrowserRefreshStore(() => saved, true), fetchImpl: api.fetchImpl });
++  await first.login(player.email, 'test-only-password');
++  assert.equal(saved.values.get(browserRefreshKey), 'refresh-login');
++  assert.equal([...saved.values.values()].some(value => value.includes('access-') || value.includes('test-only-password') || value.includes(player.email)), false);
++
++  const reopened = createAuthClient({ store: createBrowserRefreshStore(() => saved, true), fetchImpl: api.fetchImpl });
++  assert.deepEqual(await reopened.restore(), profile);
++  assert.deepEqual(await reopened.registrations(), []);
++  const refresh = api.calls.find(call => call.url.endsWith('/refresh'));
++  assert.deepEqual(JSON.parse(refresh.init.body), { refreshToken: 'refresh-login' });
++  assert.equal(api.calls.filter(call => call.url.endsWith('/login')).length, 1);
++  assert.equal(api.calls.at(-1).init.headers.Authorization, 'Bearer access-restored');
++  assert.equal(saved.values.get(browserRefreshKey), 'refresh-restored');
++});
++
++test('Google sign-in also survives reopening and rotates the saved refresh token', async () => {
++  const saved = device(); const api = backend();
++  const first = createAuthClient({ store: createBrowserRefreshStore(() => saved, true), fetchImpl: api.fetchImpl });
++  await first.adopt(parseSessionFragment('#accessToken=google-access&refreshToken=google-refresh&expiresIn=60000'));
++  const reopened = createAuthClient({ store: createBrowserRefreshStore(() => saved, true), fetchImpl: api.fetchImpl });
++  assert.deepEqual(await reopened.restore(), profile);
++  assert.deepEqual(JSON.parse(api.calls.find(call => call.url.endsWith('/refresh')).init.body), { refreshToken: 'google-refresh' });
++  assert.equal(saved.values.get(browserRefreshKey), 'refresh-restored');
++});
++
++test('explicit sign-out removes only app credentials and reopening does not call the server', async () => {
++  const saved = device(); const api = backend(); const store = createBrowserRefreshStore(() => saved, true);
++  const first = createAuthClient({ store, fetchImpl: api.fetchImpl });
++  await first.login(player.email, 'test-only-password');
++  await first.logout();
++  const before = api.calls.length;
++  assert.equal(await createAuthClient({ store, fetchImpl: api.fetchImpl }).restore(), null);
++  assert.equal(api.calls.length, before);
++  assert.deepEqual([...saved.values], [['unrelated-site-data', 'keep']]);
++});
++
++test('expired refresh is removed and is not tried again after reopening', async () => {
++  const saved = device(); const store = createBrowserRefreshStore(() => saved, true); let requests = 0;
++  await store.set('expired-refresh');
++  const fetchImpl = async () => { requests++; return json({}, 400); };
++  await assert.rejects(createAuthClient({ store, fetchImpl }).restore(), { code: 'SESSION_EXPIRED' });
++  assert.equal(await createAuthClient({ store, fetchImpl }).restore(), null);
++  assert.equal(requests, 1);
++});
++
++test('offline reopening keeps credentials so retry works without another login', async () => {
++  const saved = device(); const store = createBrowserRefreshStore(() => saved, true); const api = backend();
++  await store.set('saved-refresh'); let offline = true;
++  const client = createAuthClient({ store, fetchImpl: (...args) => {
++    if (offline) throw new TypeError('offline');
++    return api.fetchImpl(...args);
++  } });
++  await assert.rejects(client.restore(), { code: 'NETWORK' });
++  assert.equal(saved.values.get(browserRefreshKey), 'saved-refresh');
++  offline = false;
++  assert.deepEqual(await client.restore(), profile);
++});
++
++test('Safari storage restrictions are reported and do not silently promise persistence', async () => {
++  const blocked = createBrowserRefreshStore(() => { throw new DOMException('Blocked', 'SecurityError'); }, true);
++  await assert.rejects(blocked.get(), { code: 'STORAGE' });
++  await assert.rejects(blocked.set('test-refresh'), { code: 'STORAGE' });
++  await assert.rejects(blocked.set(null), { code: 'STORAGE' });
++  const full = createBrowserRefreshStore(() => ({ ...device(), setItem: () => { throw new DOMException('Full', 'QuotaExceededError'); } }), true);
++  const api = backend();
++  await assert.rejects(createAuthClient({ store: full, fetchImpl: api.fetchImpl }).login(player.email, 'test-only-password'), { code: 'STORAGE' });
++  assert.equal(api.calls.length, 1); // Profile and personal events are not loaded after a failed save.
++});
++
++test('HTTP Wi-Fi preview neither reads saved credentials nor saves a new token', async () => {
++  let reads = 0;
++  const store = createBrowserRefreshStore(() => { reads++; return device(); }, false);
++  assert.equal(await store.get(), null);
++  await assert.rejects(store.set('test-refresh'), { code: 'INSECURE' });
++  assert.equal(reads, 0);
++});
++
++test('sign-out during refresh cannot write credentials back to persistent storage', async () => {
++  const saved = device(); const store = createBrowserRefreshStore(() => saved, true);
++  await store.set('existing-refresh'); let reply;
++  const waiting = new Promise(resolve => { reply = resolve; });
++  let started; const requested = new Promise(resolve => { started = resolve; });
++  const client = createAuthClient({ store, fetchImpl: async () => { started(); return waiting; } });
++  const restore = client.restore();
++  await requested; await client.logout(); reply(json(tokens('late')));
++  await assert.rejects(restore, { code: 'CANCELLED' });
++  assert.equal(await store.get(), null);
++});
++
++test('sign-out during the first storage read cancels restore before any refresh request', async () => {
++  let reply; let count = 0; let token = 'existing-refresh';
++  const store = { get: () => new Promise(resolve => { reply = resolve; }), set: async value => { token = value; } };
++  const client = createAuthClient({ store, fetchImpl: async () => { count++; return json(tokens('late')); } });
++  const restore = client.restore();
++  await client.logout(); reply('existing-refresh');
++  await assert.rejects(restore, { code: 'CANCELLED' });
++  assert.equal(token, null); assert.equal(count, 0);
++});
+diff --git a/mobile-app/scripts/build-site.mjs b/mobile-app/scripts/build-site.mjs
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/scripts/build-site.mjs
+@@ -0,0 +1,12 @@
++import { spawnSync } from 'node:child_process';
++import { cpSync, mkdirSync, rmSync } from 'node:fs';
++import { fileURLToPath } from 'node:url';
++import path from 'node:path';
++const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
++if (path.basename(root) !== 'mobile-app') throw new Error('Разместите исходники в mobile-app/ серверного репозитория.');
++const build = spawnSync(process.execPath, [path.join(root, 'node_modules/expo/bin/cli'), 'export', '--platform', 'web', '--output-dir', 'dist-auth-web'], { cwd: root, env: { ...process.env, PADEL_WEB_BASE_PATH: '/app' }, stdio: 'inherit' });
++if (build.status !== 0) process.exit(build.status ?? 1);
++const target = path.resolve(root, '../src/main/resources/static/app');
++rmSync(target, { recursive: true, force: true });
++mkdirSync(target, { recursive: true });
++cpSync(path.join(root, 'dist-auth-web'), target, { recursive: true });
+diff --git a/mobile-app/README.md b/mobile-app/README.md
+--- a/mobile-app/README.md
++++ b/mobile-app/README.md
+@@ -21,7 +21,11 @@
+ - «Мои мероприятия»: `GET /api/players/me/tournaments`. Предстоящие — со статусом записи и позицией в листе ожидания, история — только турниры (сервер не отдаёт статус записи для прошедших). Отменённые записи сервер не возвращает. Запись и отмена — на сайте.
+ - Анонимный или просроченный запрос к `/api/**` сервер не отклоняет `401`, а редиректит на `/login`. Клиент запрашивает с `redirect: 'manual'` и считает такой ответ истёкшей сессией.
+ 
+-Сессия: в браузере оба токена только в памяти вкладки (перезагрузка — повторный вход), в нативном приложении refresh — в Expo SecureStore. Пароль не сохраняется.
++Сессия сохраняется после обновления, закрытия вкладки и повторного открытия приложения в том же браузере и на том же домене. В браузере только refresh-токен хранится в `localStorage` под отдельным ключом `onepadel.app.refresh.v1`; access-токен остаётся в памяти. При запуске клиент обновляет токены через `/api/auth/refresh`, затем загружает актуальный профиль. Для почты и Google используется одно хранилище. В нативном приложении refresh остаётся в Expo SecureStore. Пароль, профиль и список мероприятий не сохраняются.
++
++«Выйти» удаляет сохранённый refresh; запоздавший ответ сервера не может восстановить вход после выхода. Истёкший или отклонённый refresh удаляется; временная ошибка сети сохраняет его для повторной попытки. Ошибки хранилища отображаются пользователю. HTTP-просмотр по Wi-Fi не читает и не сохраняет токены.
++
++Ограничения: срок действия задаёт сервер (по умолчанию refresh — 7 дней, при успешном обновлении выдаётся новый); очистка данных сайта и закрытие приватного сеанса сбрасывают вход. Разные браузеры и Safari/отдельная иконка на домашнем экране могут иметь отдельные хранилища. `localStorage` доступен JavaScript того же origin — это не HttpOnly-cookie; серверный cookie-сеанс можно рассмотреть отдельно. Токен не выводится в интерфейс, адреса запросов, логи или аналитику.
+ 
+ ## Сборка и проверка
+ 
+diff --git a/docs/auth-flow.md b/docs/auth-flow.md
+--- a/docs/auth-flow.md
++++ b/docs/auth-flow.md
+@@ -361,7 +361,7 @@
+ - `OAuth2AuthenticationSuccessHandler` после успешного входа видит флаг, снимает его и редиректит не на `/players/dashboard`, а на `/app/#accessToken=...&refreshToken=...&expiresIn=...` — токены в **fragment** URL (после `#`), не в query: fragment не уходит на сервер и не попадает в access-логи/`Referer`.
+ - Сессия и remember-me cookie выставляются как обычно (общий код для обоих случаев) — веб-вход без `client=app` не меняется.
+ - Ошибка OAuth2 для входа из приложения обрабатывается так же, как и для веба (`/login?error=oauth2`) — отдельной обработки на стороне клиента пока нет.
+-- Клиент при загрузке `/app/` читает токены из fragment, сразу убирает их из адресной строки (`history.replaceState`) и держит только в памяти вкладки. Остальные запросы клиента: `POST /api/auth/login`, `POST /api/auth/refresh`, `GET /api/auth/me`, `GET /api/players/me/tournaments` — по Bearer-токену, без cookie сайта (`credentials: omit`). Анонимный/просроченный `/api/**` отвечает редиректом на `/login`, клиент считает его истёкшей сессией.
++- Клиент при загрузке `/app/` читает токены из fragment, сразу убирает их из адресной строки (`history.replaceState`) и держит access-токен только в памяти вкладки. Refresh-токен сохраняется в `localStorage` под ключом `onepadel.app.refresh.v1` (в native — Expo SecureStore). После повторного открытия клиент обновляет токены через `/api/auth/refresh` и загружает профиль; «Выйти» удаляет сохранённый refresh. Отклонённый или истёкший refresh удаляется, временная ошибка сети допускает повторную попытку без потери сохранённого входа. Пароль не сохраняется. Остальные запросы клиента: `POST /api/auth/login`, `POST /api/auth/refresh`, `GET /api/auth/me`, `GET /api/players/me/tournaments` — по Bearer-токену, без cookie сайта (`credentials: omit`). Анонимный/просроченный `/api/**` отвечает редиректом на `/login`, клиент считает его истёкшей сессией.
+ 
+ ---
+ 
