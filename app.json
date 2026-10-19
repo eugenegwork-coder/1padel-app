@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "1-Padel",
+    "slug": "one-padel-mobile",
+    "scheme": "onepadel",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true
+    }
+  }
+}
