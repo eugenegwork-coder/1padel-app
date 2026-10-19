@@ -1,0 +1,816 @@
+diff --git a/mobile-app/App.js b/mobile-app/App.js
+--- a/mobile-app/App.js
++++ b/mobile-app/App.js
+@@ -11,6 +11,9 @@
+ import { messages, organizerMessages } from './src/copy';
+ import { calculateRanking, validateResult } from './src/scoring';
+ import { colors as COLORS } from './src/theme';
++import IndividualBookingScreen from './src/IndividualBookingScreen';
++import { readBookingIntent, saveBookingIntent } from './src/bookingIntent';
++import IndividualBookingLab from './src/IndividualBookingLab';
+ 
+ const players = ['Анна', 'Борис', 'Клара', 'Денис'];
+ const demoCourt = [0, 1, 2, 3];
+@@ -130,7 +133,10 @@
+   );
+ }
+ 
+-export default function App() { return <AuthProvider><AppContent /></AuthProvider>; }
++export default function App() {
++  if (Platform.OS === 'web' && typeof window !== 'undefined' && new URL(window.location.href).searchParams.get('screen') === 'individual-booking-test') return <IndividualBookingLab />;
++  return <AuthProvider><AppContent /></AuthProvider>;
++}
+ 
+ function AppContent() {
+   const auth = useAuth();
+@@ -138,7 +144,20 @@
+   const [mode, setMode] = useState(() => Platform.OS === 'web' && typeof window !== 'undefined' && window.location.hash.includes('accessToken=') ? 'account' : 'player');
+   const [showLogin, setShowLogin] = useState(() => Platform.OS === 'web' && typeof window !== 'undefined' && new URL(window.location.href).searchParams.get('screen') === 'login');
+   const [language, setLanguage] = useState('ru');
+-  useEffect(() => { if (auth.profile && showLogin) { setMode('account'); setShowLogin(false); } }, [auth.profile]);
++  const [bookingId, setBookingId] = useState(null);
++  const [pendingBookingId, setPendingBookingId] = useState(readBookingIntent);
++  function completeLogin() {
++    if (pendingBookingId !== null) { setBookingId(pendingBookingId); setPendingBookingId(null); setMode('player'); saveBookingIntent(null); }
++    else setMode('account');
++    setShowLogin(false);
++  }
++  useEffect(() => { if (auth.profile && (showLogin || pendingBookingId !== null)) completeLogin(); }, [auth.profile?.id, showLogin, pendingBookingId]);
++  useEffect(() => { if (!auth.profile && !auth.restoring && bookingId !== null) { setBookingId(null); setPendingBookingId(bookingId); saveBookingIntent(bookingId); setShowLogin(true); } }, [auth.profile?.id, auth.restoring, bookingId]);
++  function startBooking(event) {
++    if (auth.profile) setBookingId(event.id);
++    else { setPendingBookingId(event.id); saveBookingIntent(event.id); setShowLogin(true); }
++  }
++  function closeLogin() { setShowLogin(false); setPendingBookingId(null); saveBookingIntent(null); }
+   const t = messages[language];
+   const [savedResult, setSavedResult] = useState(null);
+   return (
+@@ -155,9 +174,10 @@
+           </TouchableOpacity>)}
+         </View>
+       </View>
+-      <View style={[styles.body, showLogin && styles.hidden]}>{mode === 'player' ? <PlayerScreen language={language} /> : mode === 'account' ? (auth.profile ? <MyEventsScreen language={language} onBrowse={() => setMode('player')} /> : <LoginScreen language={language} onClose={() => setMode('player')} onBrowse={() => setMode('player')} onSuccess={() => setMode('account')} />) : <OrganizerScreen language={language} savedResult={savedResult} onSaveResult={setSavedResult} />}</View>
+-      {showLogin && <LoginScreen language={language} onClose={() => setShowLogin(false)} onBrowse={() => { setMode('player'); setShowLogin(false); }} onSuccess={() => { setMode('account'); setShowLogin(false); }} />}
+-      {!showLogin && <View style={styles.tabBar}>
++      <View style={[styles.body, (showLogin || bookingId !== null) && styles.hidden]}>{mode === 'player' ? <PlayerScreen language={language} onBook={startBooking} /> : mode === 'account' ? (auth.profile ? <MyEventsScreen language={language} onBrowse={() => setMode('player')} /> : <LoginScreen language={language} onClose={() => setMode('player')} onBrowse={() => setMode('player')} onSuccess={() => setMode('account')} />) : <OrganizerScreen language={language} savedResult={savedResult} onSaveResult={setSavedResult} />}</View>
++      {showLogin && <LoginScreen language={language} onClose={closeLogin} onBrowse={() => { setMode('player'); closeLogin(); }} onSuccess={completeLogin} />}
++      {bookingId !== null && auth.profile && !showLogin && <IndividualBookingScreen key={`${bookingId}:${auth.profile.id}`} tournamentId={bookingId} booking={auth.booking} profileName={auth.profile.name} language={language} onClose={() => setBookingId(null)} onMyEvents={() => { setBookingId(null); setMode('account'); }} />}
++      {!showLogin && bookingId === null && <View style={styles.tabBar}>
+         <TouchableOpacity accessibilityRole="tab" accessibilityState={{ selected: mode === 'player' }}
+           onPress={() => setMode('player')} style={[styles.tab, mode === 'player' && styles.tabActive]}>
+           <TabIcon active={mode === 'player'} />
+diff --git a/mobile-app/README.md b/mobile-app/README.md
+--- a/mobile-app/README.md
++++ b/mobile-app/README.md
+@@ -32,3 +32,20 @@
+ ```
+ 
+ Готовая сборка в `src/main/resources/static/app/` коммитится вместе с исходниками: сервер собирается Maven без Node. После правки исходников — пересобрать и закоммитить её.
++
++
++## Индивидуальная запись из приложения (подготовлено 19.10.2026)
++
++Кнопка записи в деталях KING_OF_COURT, AMERICANO + INDIVIDUAL, PADEL_CLINIC, CANCHA_ABIERTA открывает IndividualBookingScreen. Парные мероприятия остаются на существующем сайте. Реальный POST `/players/tournaments/{id}/register` выполняется только после явного подтверждения пользователя и свежей проверки события, своих записей и контакта. ID игрока клиент не передаёт: используется Bearer-сессия. POST/PATCH не повторяются автоматически.
++
++Существующая запись, CONFIRMED и WAITLIST различаются. Сохраняется позиция ожидания из ответа сервера. При изменении цены/условий/формата/мест подтверждение сбрасывается. После тайм-аута доступна сверка своей заявки, без повторного POST. Пока результат неоднозначен, повторная отправка из этой модели запрещена. При смене аккаунта старый экран не может отправить заявку от нового игрока.
++
++WhatsApp/Telegram можно добавить через существующий PATCH `/api/players/me/contact`. При needLevel предлагается профиль сайта: узкого JSON API изменения уровня пока нет. Уровневые ограничения не дублируются на клиенте. Публичные данные не считаются гарантией места: итог даёт ответ сервера.
++
++Выбор мероприятия перед Google сохраняется как ID в sessionStorage на 30 минут. После входа открывается экран проверки этого события; запись автоматически не создаётся. Хранилище сессии и SecureStore из LFPT-0646 сохранены.
++
++Изолированная проверка того же экрана: `/?screen=individual-booking-test`. Это отдельная модель с вымышленными данными, без запросов записи на сайт. В ней доступны четыре формата, резерв, существующая запись, контакт, уровень, изменение цены и обрыв связи. Не использовать этот режим как доказательство реальной регистрации на проде.
++
++48/48 тестов, TypeScript, web export и интерактивная проверка ключевых веток выполнены локально. Перед публикацией нужны обычные проверки проекта и реальная проверка на согласованном тестовом мероприятии. Финансовые тексты и дедлайны следует сверить с итоговым решением по PR #652 и отдельным исправлениям регистрации; текущий клиент использует существующий API и явный дедлайн (либо серверный стандарт начала минус 24 часа).
++
++Известные границы: проверка цены/условий перед POST не является атомарной серверной фиксацией цены. У API нет idempotency key: защита от повторов опирается на отсутствие автоматического повтора, сверку своих записей и серверную уникальность регистрации. После закрытия/перезагрузки клиента память о неоднозначном POST теряется, но новый вход в экран сначала проверяет существующую запись. Отмена через приложение и парные ветки в этот инкремент не входят.
+diff --git a/mobile-app/src/auth.ts b/mobile-app/src/auth.ts
+--- a/mobile-app/src/auth.ts
++++ b/mobile-app/src/auth.ts
+@@ -14,6 +14,17 @@
+   code: string;
+   constructor(code: string) { super(code); this.name = 'AuthError'; this.code = code; }
+ }
++export class PlayerRequestError extends AuthError {
++  detail: string; needContact: boolean; needLevel: boolean;
++  constructor(value: unknown) {
++    super('REJECTED');
++    const data = record(value) ? value : {};
++    this.detail = typeof data.message === 'string' ? data.message.slice(0, 600) : '';
++    this.needContact = data.needContact === true;
++    this.needLevel = data.needLevel === true;
++  }
++}
++type PlayerRequest = { method?: 'GET' | 'POST' | 'PATCH'; body?: unknown; business?: boolean };
+ type Store = { get: () => Promise<string | null>; set: (token: string | null) => Promise<void> };
+ function record(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
+ function text(value: unknown): value is string { return typeof value === 'string' && value.length > 0; }
+@@ -106,11 +117,11 @@
+   let writes = Promise.resolve();
+   const save = (token: string | null) => { writes = writes.catch(() => {}).then(() => store.set(token)); return writes; };
+   // badRequest — во что превращается 400: сервер отвечает им и на неверный пароль, и на негодный refresh.
+-  async function raw(path: string, body?: unknown, accessToken?: string, badRequest = 'UNAVAILABLE'): Promise<unknown> {
++  async function raw(path: string, body?: unknown, accessToken?: string, badRequest = 'UNAVAILABLE', options: PlayerRequest = {}): Promise<unknown> {
+     const controller = new AbortController();
+     const timer = setTimeout(() => controller.abort(), timeoutMs);
+     try {
+-      const response = await fetchImpl(base + path, { method: body === undefined ? 'GET' : 'POST',
++      const response = await fetchImpl(base + path, { method: options.method ?? (body === undefined ? 'GET' : 'POST'),
+         headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
+         ...(body === undefined ? {} : { body: JSON.stringify(body) }), credentials: 'omit', cache: 'no-store', redirect: 'manual', signal: controller.signal });
+       // Без действующего токена сервер не отвечает 401, а редиректит /api/** на /login.
+@@ -118,6 +129,8 @@
+       if (response.status === 429) throw new AuthError('RATE_LIMIT');
+       const isJson = response.headers.get('content-type')?.includes('application/json');
+       if (!response.ok) {
++        if (options.business && response.status === 400 && isJson) throw new PlayerRequestError(await response.json());
++        if (options.business && response.status === 403) throw new AuthError('FORBIDDEN');
+         if (response.status === 400) {
+           const message = isJson ? '' : await response.text().catch(() => '');
+           throw new AuthError(badRequest === 'INVALID_CREDENTIALS' && /confirma|desactivada/i.test(message) ? 'ACCOUNT_UNAVAILABLE' : badRequest);
+@@ -127,7 +140,9 @@
+         throw new AuthError('UNAVAILABLE');
+       }
+       if (!isJson) throw new AuthError('UNAVAILABLE');
+-      return await response.json();
++      const value = await response.json();
++      if (options.business && record(value) && value.success === false) throw new PlayerRequestError(value);
++      return value;
+     } catch (error) { if (error instanceof AuthError) throw error; throw new AuthError('NETWORK'); }
+     finally { clearTimeout(timer); }
+   }
+@@ -157,18 +172,21 @@
+     }
+     return refreshTask;
+   }
+-  async function authorized(path: string) {
++  async function authorized(path: string, options: PlayerRequest = {}) {
+     const started = epoch;
+     if (!session || session.expiresAt < Date.now() + 30000) await refresh();
+     if (!session || started !== epoch) throw new AuthError('CANCELLED');
+     try {
+-      const value = await raw(path, undefined, session.accessToken);
++      const value = await raw(path, options.body, session.accessToken, 'UNAVAILABLE', options);
+       if (started !== epoch) throw new AuthError('CANCELLED');
+       return value;
+     } catch (error) {
+       if (error instanceof AuthError && ['ACCOUNT_UNAVAILABLE', 'PLAYER_REQUIRED'].includes(error.code) && started === epoch) { await clear(); onExpired(); throw error; }
+       if (!(error instanceof AuthError) || error.code !== 'SESSION_EXPIRED' || started !== epoch) throw error;
+       await refresh();
++      // После мутации не повторяем POST/PATCH автоматически даже при редиректе/401.
++      // Новый запрос возможен только после сверки своей записи и нового подтверждения.
++      if (options.method && options.method !== 'GET') throw new AuthError('REVIEW_REQUIRED');
+       if (!session || started !== epoch) throw new AuthError('CANCELLED');
+       try {
+         const value = await raw(path, undefined, session.accessToken);
+@@ -199,6 +217,15 @@
+       return me();
+     },
+     async registrations() { return parseRegistrations(await authorized('/api/players/me/tournaments'), base); },
++    async contactStatus() { return authorized('/api/players/me/contact-status'); },
++    async saveContact(value: { telefono?: string; telegramUsername?: string }) {
++      return authorized('/api/players/me/contact', { method: 'PATCH', body: value, business: true });
++    },
++    async registerIndividual(tournamentId: number) {
++      if (!Number.isSafeInteger(tournamentId) || tournamentId < 1) throw new AuthError('UNAVAILABLE');
++      return authorized(`/players/tournaments/${tournamentId}/register`, { method: 'POST', business: true });
++    },
++    sessionVersion() { return epoch; },
+     cancelPending() { epoch++; refreshTask = null; },
+     logout: clear,
+   };
+diff --git a/mobile-app/src/AuthContext.tsx b/mobile-app/src/AuthContext.tsx
+--- a/mobile-app/src/AuthContext.tsx
++++ b/mobile-app/src/AuthContext.tsx
+@@ -4,6 +4,8 @@
+ import { AuthError, createAuthClient, parseSessionFragment } from './auth';
+ import type { Profile } from './auth';
+ import { createNativeSessionStore, createWebSessionStore } from './sessionStore';
++import { createIndividualBooking } from './individualBooking';
++import { createScheduleClient } from './schedule';
+ 
+ const secureKey = 'onepadel.refresh.v1';
+ export const secureAuthContext = Platform.OS !== 'web' || (typeof window !== 'undefined' && (window.location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(window.location.hostname)));
+@@ -16,7 +18,7 @@
+ 
+ type Auth = { profile: Profile | null; restoring: boolean; restoreError: string | null; googleCode: string | null;
+   login: (email: string, password: string) => Promise<void>; google: () => Promise<void>; cancelGoogle: () => void;
+-  logout: () => Promise<void>; retryRestore: () => Promise<void>; client: ReturnType<typeof createAuthClient> };
++  logout: () => Promise<void>; retryRestore: () => Promise<void>; client: ReturnType<typeof createAuthClient>; booking: ReturnType<typeof createIndividualBooking> };
+ const Context = createContext<Auth | null>(null);
+ export function AuthProvider({ children }: { children: React.ReactNode }) {
+   const [profile, setProfile] = useState<Profile | null>(null);
+@@ -25,6 +27,13 @@
+   const [googleCode, setGoogleCode] = useState<string | null>(null);
+   const attempt = useRef(0);
+   const client = useMemo(() => createAuthClient({ store, baseUrl: Platform.OS === 'web' && typeof window !== 'undefined' && window.location.protocol === 'https:' && ['1-padel.com', 'www.1-padel.com'].includes(window.location.hostname) ? window.location.origin : 'https://1-padel.com', onExpired: () => setProfile(null) }), []);
++  // Отдельная модель записи на каждый аккаунт: неопределённый запрос одного игрока
++  // не должен влиять на другого после выхода и смены аккаунта.
++  const booking = useMemo(() => {
++    const baseUrl = Platform.OS === 'web' && typeof window !== 'undefined' && window.location.protocol === 'https:' && ['1-padel.com', 'www.1-padel.com'].includes(window.location.hostname) ? window.location.origin : 'https://1-padel.com';
++    const schedule = createScheduleClient({ baseUrl });
++    return createIndividualBooking({ ...client, details: id => schedule.details(id, 'es') });
++  }, [client, profile?.id]);
+   const retryRestore = useCallback(async () => {
+     setRestoring(true); setRestoreError(null);
+     try {
+@@ -53,6 +62,6 @@
+     cancelGoogle(); setRestoreError(null); setProfile(await client.login(email, password));
+   }
+   async function logout() { cancelGoogle(); await client.logout(); setProfile(null); }
+-  return <Context.Provider value={{ profile, restoring, restoreError, googleCode, login, google, cancelGoogle, logout, retryRestore, client }}>{children}</Context.Provider>;
++  return <Context.Provider value={{ profile, restoring, restoreError, googleCode, login, google, cancelGoogle, logout, retryRestore, client, booking }}>{children}</Context.Provider>;
+ }
+ export function useAuth() { const value = useContext(Context); if (!value) throw new Error('AuthProvider required'); return value; }
+diff --git a/mobile-app/src/PlayerScreen.tsx b/mobile-app/src/PlayerScreen.tsx
+--- a/mobile-app/src/PlayerScreen.tsx
++++ b/mobile-app/src/PlayerScreen.tsx
+@@ -7,6 +7,8 @@
+ import type { ScheduleFilters } from './filters';
+ import { messages } from './copy';
+ import { colors as palette } from './theme';
++import { isIndividualEvent } from './individualBooking';
++import { bookingCopy } from './bookingCopy';
+ 
+ const isFixture = process.env.EXPO_PUBLIC_PREVIEW_MODE === 'fixtures';
+ const apiBase = Platform.OS === 'web' ? '' : (process.env.EXPO_PUBLIC_API_BASE_URL || 'https://1-padel.com');
+@@ -103,7 +105,7 @@
+   </View>;
+ }
+ 
+-export default function PlayerScreen({ language }: { language: Language }) {
++export default function PlayerScreen({ language, onBook }: { language: Language; onBook?: (event: PublicTournament) => void }) {
+   const t = messages[language];
+   const client = useMemo(() => createScheduleClient({ baseUrl: apiBase }), []);
+   const [filters, setFilters] = useState<ScheduleFilters>({ ...defaultFilters });
+@@ -253,10 +255,10 @@
+       <View style={styles.bookingInner}>
+         <View style={styles.bookingRow}>
+           <View style={styles.bookingPrice}><Text style={styles.caption}>{t.priceFrom}</Text><Text style={styles.detailPrice}>{eventPrice(selected, language)}</Text></View>
+-          <View style={styles.bookingAction}><Action title={selected.registrationOpen ? selected.available > 0 ? t.book : t.waitlist : t.openEvent}
+-            disabled={isFixture} onPress={() => openWebsite(selected.websiteUrl)} /></View>
++          <View style={styles.bookingAction}><Action title={selected.registrationOpen ? isIndividualEvent(selected) && onBook ? selected.available > 0 ? bookingCopy[language].openInline : bookingCopy[language].waitInline : selected.available > 0 ? t.book : t.waitlist : t.openEvent}
++            disabled={isFixture} onPress={() => { if (selected.registrationOpen && isIndividualEvent(selected) && onBook) onBook(selected); else void openWebsite(selected.websiteUrl); }} /></View>
+         </View>
+-        <Text style={styles.bookingNote}>{t.siteNote}</Text>
++        <Text style={styles.bookingNote}>{selected.registrationOpen && isIndividualEvent(selected) && onBook ? bookingCopy[language].inlineNote : t.siteNote}</Text>
+       </View>
+     </View>}
+     <Modal visible={filterVisible} transparent animationType="slide" onRequestClose={() => setFilterVisible(false)}>
+diff --git a/mobile-app/src/individualBooking.ts b/mobile-app/src/individualBooking.ts
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/src/individualBooking.ts
+@@ -0,0 +1,102 @@
++import { AuthError, PlayerRequestError } from './auth.ts';
++import type { Registration } from './auth.ts';
++import type { PublicTournament } from './schedule.ts';
++
++export type BookingSnapshot = { event: PublicTournament; registration: Registration | null; hasContact: boolean };
++export type BookingReceipt = { status: 'CONFIRMED' | 'WAITLIST'; waitlistPosition: number | null; existing: boolean };
++export class BookingError extends AuthError {
++  snapshot?: BookingSnapshot;
++  constructor(code: string, snapshot?: BookingSnapshot) { super(code); this.snapshot = snapshot; }
++}
++export type BookingTransport = {
++  sessionVersion?: () => number;
++  details: (id: number) => Promise<PublicTournament>;
++  registrations: () => Promise<Registration[]>;
++  contactStatus: () => Promise<unknown>;
++  saveContact: (value: { telefono?: string; telegramUsername?: string }) => Promise<unknown>;
++  registerIndividual: (id: number) => Promise<unknown>;
++};
++export function isIndividualEvent(event: PublicTournament) {
++  return event.modality === 'INDIVIDUAL' && ['KING_OF_COURT', 'AMERICANO', 'PADEL_CLINIC', 'CANCHA_ABIERTA'].includes(event.type);
++}
++export function cancellationDeadline(event: PublicTournament) {
++  return event.cancellationDeadline ?? new Date(Date.parse(event.startsAt) - 86400000).toISOString();
++}
++// Отслеживаем и цену, и важные признаки заявки, а не только количество мест.
++export function bookingQuote(event: PublicTournament) {
++  return JSON.stringify([event.id, event.name, event.type, event.modality, event.gender, event.level, event.status,
++    event.registrationOpen, event.price, event.currency, event.startsAt, event.timeZone, event.club.id, event.club.name, event.club.address, event.duration, event.description,
++    cancellationDeadline(event), event.available > 0]);
++}
++export function parseBookingReceipt(value: unknown, existing = false): BookingReceipt {
++  const row = value as Record<string, unknown> | null;
++  if (!row || typeof row !== 'object' || Array.isArray(row) || row.success !== true || !['CONFIRMED', 'WAITLIST'].includes(String(row.status))) throw new BookingError('UNCERTAIN');
++  if (row.waitlistPosition != null && (!Number.isSafeInteger(row.waitlistPosition) || Number(row.waitlistPosition) < 1)) throw new BookingError('UNCERTAIN');
++  return { status: row.status as BookingReceipt['status'], waitlistPosition: row.waitlistPosition as number | null ?? null, existing };
++}
++export function createIndividualBooking(transport: BookingTransport) {
++  const sessionVersion = transport.sessionVersion?.();
++  function checkAccount() {
++    if (transport.sessionVersion?.() !== sessionVersion) throw new AuthError('CANCELLED');
++  }
++  const pending = new Set<number>();
++  const uncertain = new Set<number>();
++  async function load(id: number): Promise<BookingSnapshot> {
++    checkAccount();
++    if (!Number.isSafeInteger(id) || id < 1) throw new BookingError('UNAVAILABLE');
++    const [event, registrations, contact] = await Promise.all([transport.details(id), transport.registrations(), transport.contactStatus()]);
++    checkAccount();
++    if (event.id !== id || !contact || typeof contact !== 'object' || typeof (contact as { hasContact?: unknown }).hasContact !== 'boolean') throw new BookingError('UNAVAILABLE');
++    return { event, registration: registrations.find(row => row.event.id === id && row.active && row.status !== null) ?? null, hasContact: (contact as { hasContact: boolean }).hasContact };
++  }
++  function guard(snapshot: BookingSnapshot) {
++    if (!isIndividualEvent(snapshot.event)) throw new BookingError('NOT_INDIVIDUAL', snapshot);
++    if (!snapshot.event.registrationOpen || snapshot.event.status !== 'REGISTRO_ABIERTO' || Date.parse(snapshot.event.startsAt) <= Date.now()) throw new BookingError('CLOSED', snapshot);
++    if (!snapshot.hasContact) throw new BookingError('NEED_CONTACT', snapshot);
++  }
++  function existing(snapshot: BookingSnapshot): BookingReceipt | null {
++    if (!snapshot.registration) return null;
++    const { status, waitlistPosition } = snapshot.registration;
++    if (status !== 'CONFIRMED' && status !== 'WAITLIST') throw new BookingError('EXISTING', snapshot);
++    return { status, waitlistPosition, existing: true };
++  }
++  return {
++    load,
++    isUncertain: (id: number) => uncertain.has(id),
++    async reconcile(id: number) {
++      const snapshot = await load(id);
++      const receipt = existing(snapshot);
++      if (receipt) uncertain.delete(id);
++      // Отсутствие записи после тайм-аута ещё не доказывает, что первый POST не завершится.
++      return { snapshot, receipt, uncertain: uncertain.has(id) };
++    },
++    async saveContact(value: { telefono?: string; telegramUsername?: string }) {
++      checkAccount();
++      const telefono = value.telefono?.trim(); const telegramUsername = value.telegramUsername?.trim();
++      if ((!telefono || !/^\+?[0-9\s\-()]{8,20}$/.test(telefono)) && (!telegramUsername || !/^@?[A-Za-z][A-Za-z0-9_]{4,31}$/.test(telegramUsername))) throw new BookingError('NEED_CONTACT');
++      // Не отправляем второе заполненное, но некорректное поле на сервер.
++      if (telefono && !/^\+?[0-9\s\-()]{8,20}$/.test(telefono) || telegramUsername && !/^@?[A-Za-z][A-Za-z0-9_]{4,31}$/.test(telegramUsername)) throw new BookingError('NEED_CONTACT');
++      const reply = await transport.saveContact({ ...(telefono ? { telefono } : {}), ...(telegramUsername ? { telegramUsername } : {}) });
++      if (!reply || typeof reply !== 'object' || (reply as { success?: unknown }).success !== true) throw new BookingError('UNAVAILABLE');
++    },
++    async join(id: number, quote: string): Promise<BookingReceipt> {
++      if (pending.has(id)) throw new BookingError('BUSY');
++      if (uncertain.has(id)) throw new BookingError('UNCERTAIN');
++      pending.add(id);
++      try {
++        const snapshot = await load(id);
++        if (!isIndividualEvent(snapshot.event)) throw new BookingError('NOT_INDIVIDUAL', snapshot);
++        const receipt = existing(snapshot);
++        if (receipt) return receipt;
++        guard(snapshot);
++        if (bookingQuote(snapshot.event) !== quote) throw new BookingError('CHANGED', snapshot);
++        checkAccount();
++        try { return parseBookingReceipt(await transport.registerIndividual(id)); }
++        catch (error) {
++          if (error instanceof PlayerRequestError || error instanceof AuthError && ['REVIEW_REQUIRED', 'RATE_LIMIT', 'FORBIDDEN', 'SESSION_EXPIRED', 'CANCELLED', 'PLAYER_REQUIRED'].includes(error.code)) throw error;
++          uncertain.add(id); throw new BookingError('UNCERTAIN');
++        }
++      } finally { pending.delete(id); }
++    },
++  };
++}
+diff --git a/mobile-app/src/IndividualBookingScreen.tsx b/mobile-app/src/IndividualBookingScreen.tsx
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/src/IndividualBookingScreen.tsx
+@@ -0,0 +1,102 @@
++import React, { useEffect, useRef, useState } from 'react';
++import { ActivityIndicator, KeyboardAvoidingView, Linking, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
++import type { Language } from './schedule';
++import { eventDate, eventPrice } from './schedule';
++import { AuthError, PlayerRequestError } from './auth';
++import { BookingError, bookingQuote, cancellationDeadline, isIndividualEvent } from './individualBooking';
++import type { BookingSnapshot, BookingReceipt, createIndividualBooking } from './individualBooking';
++import { bookingCopy } from './bookingCopy';
++import { messages } from './copy';
++import { colors as c } from './theme';
++
++export default function IndividualBookingScreen({ tournamentId, booking, language, profileName, onClose, onMyEvents, demo = false }: {
++  tournamentId: number; booking: ReturnType<typeof createIndividualBooking>; language: Language; profileName: string;
++  onClose: () => void; onMyEvents: () => void; demo?: boolean;
++}) {
++  const t = bookingCopy[language];
++  const [snapshot, setSnapshot] = useState<BookingSnapshot | null>(null);
++  const [receipt, setReceipt] = useState<BookingReceipt | null>(null);
++  const [error, setError] = useState<AuthError | null>(null);
++  const [busy, setBusy] = useState(false); const [loading, setLoading] = useState(true);
++  const [accepted, setAccepted] = useState(false); const [uncertain, setUncertain] = useState(false);
++  const [uncertainChecked, setUncertainChecked] = useState(false);
++  const [phone, setPhone] = useState(''); const [telegram, setTelegram] = useState('');
++  const running = useRef(false); const version = useRef(0);
++  function problem(value: unknown) {
++    const issue = value instanceof AuthError ? value : new AuthError('UNAVAILABLE');
++    if (issue instanceof BookingError && issue.snapshot) { setSnapshot(issue.snapshot); setAccepted(false); }
++    setError(issue); if (issue.code === 'UNCERTAIN') { setUncertain(true); setUncertainChecked(false); }
++  }
++  async function perform(action: () => Promise<void>) {
++    if (running.current) return;
++    running.current = true; const started = version.current; setBusy(true); setError(null);
++    try { await action(); } catch (value) { if (started === version.current) problem(value); }
++    finally { running.current = false; if (started === version.current) { setBusy(false); setLoading(false); } }
++  }
++  async function check() {
++    const started = version.current;
++    await perform(async () => {
++      const next = await booking.reconcile(tournamentId);
++      if (started !== version.current) return;
++      setSnapshot(next.snapshot); setReceipt(next.receipt); setAccepted(false); setUncertain(next.uncertain); setUncertainChecked(next.uncertain);
++    });
++  }
++  useEffect(() => { version.current++; void check(); return () => { version.current++; }; }, [booking, tournamentId]);
++  const needContact = snapshot?.hasContact === false || error instanceof PlayerRequestError && error.needContact || error?.code === 'NEED_CONTACT';
++  const needLevel = error instanceof PlayerRequestError && error.needLevel;
++  const event = snapshot?.event;
++  const open = !!event && event.registrationOpen && event.status === 'REGISTRO_ABIERTO' && Date.parse(event.startsAt) > Date.now();
++  const individual = !!event && isIndividualEvent(event);
++  const existing = !!snapshot?.registration;
++  let errorText = t.unavailable;
++  if (error?.code === 'CHANGED') errorText = t.changed;
++  if (error?.code === 'CLOSED') errorText = t.closed;
++  if (error?.code === 'NOT_INDIVIDUAL') errorText = t.notIndividual;
++  if (error?.code === 'FORBIDDEN') errorText = t.forbidden;
++  if (error?.code === 'REVIEW_REQUIRED') errorText = t.review;
++  if (needContact) errorText = t.contactHint;
++  if (needLevel) errorText = t.needLevel;
++  if (error instanceof PlayerRequestError && !needLevel && !needContact) errorText = error.detail || t.rejected;
++  async function external(url: string) { try { await Linking.openURL(url); } catch { setError(new AuthError('UNAVAILABLE')); } }
++  return <KeyboardAvoidingView style={s.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
++    <View style={s.top}><TouchableOpacity accessibilityRole="button" onPress={onClose} style={s.back}><Text style={s.link}>‹ {t.back}</Text></TouchableOpacity><Text accessibilityRole="header" style={s.title}>{t.title}</Text></View>
++    {demo && <Text style={s.demo}>{t.demo}</Text>}
++    <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={s.content}>
++      {loading && <View style={s.state}><ActivityIndicator color={c.orange} /><Text style={s.body}>{t.loading}</Text></View>}
++      {receipt && <View style={[s.notice, receipt.status === 'WAITLIST' && s.amber]}><Text accessibilityRole="header" style={s.result}>{receipt.existing ? t.already : receipt.status === 'CONFIRMED' ? t.confirmed : t.waiting}</Text><Text style={s.body}>{receipt.status === 'CONFIRMED' ? t.confirmedBody : t.waitBody}</Text>{receipt.waitlistPosition != null && <Text style={s.fact}>{t.position}: {receipt.waitlistPosition}</Text>}</View>}
++      {uncertain && !receipt && <View style={[s.notice, s.amber]}><Text style={s.result}>{t.uncertain}</Text><Text style={s.body}>{t.uncertainBody}</Text>{uncertainChecked && <Text style={s.body}>{t.unconfirmed}</Text>}</View>}
++      {event && <View style={s.card}><Text style={s.eventTitle}>{messages[language][event.type]}</Text><Text style={s.body}>{messages[language][event.gender]}{event.level ? ` · ${event.level.replaceAll('_', '/')}` : ''} · {t.individual}</Text><Text style={s.fact}>{eventDate(event.startsAt, event.timeZone, language)}</Text><Text style={s.body}>{event.club.name}</Text>{event.club.address && <Text style={s.body}>{event.club.address}</Text>}<View style={s.priceRow}><Text style={s.body}>{t.price}</Text><Text style={s.price}>{eventPrice(event, language)}</Text></View></View>}
++      {!loading && event && !receipt && !uncertain && <>
++        <View style={s.card}><Text style={s.label}>{t.person}</Text><Text style={s.fact}>{profileName}</Text></View>
++        {!individual && <Text accessibilityRole="alert" style={s.error}>{t.notIndividual}</Text>}
++        {individual && !open && <Text accessibilityRole="alert" style={s.error}>{t.closed}</Text>}
++        {existing && <View style={s.notice}><Text style={s.fact}>{t.existing}</Text><Button secondary title={t.myEvents} onPress={onMyEvents} /></View>}
++        {individual && open && !existing && needContact && <View style={s.card}><Text style={s.sectionTitle}>{t.contact}</Text><Text style={s.body}>{t.contactHint}</Text><Text style={s.label}>{t.phone}</Text><TextInput accessibilityLabel={t.phone} keyboardType="phone-pad" value={phone} onChangeText={setPhone} editable={!busy} style={s.input} placeholder="+54…" /><Text style={s.label}>{t.telegram}</Text><TextInput accessibilityLabel={t.telegram} autoCapitalize="none" autoCorrect={false} value={telegram} onChangeText={setTelegram} editable={!busy} style={s.input} placeholder="@username" /><Button title={t.saveContact} disabled={busy} onPress={() => {
++          const started = version.current;
++          void perform(async () => { await booking.saveContact({ telefono: phone, telegramUsername: telegram }); const next = await booking.load(tournamentId); if (started === version.current) { setSnapshot(next); setAccepted(false); setPhone(''); setTelegram(''); } });
++        }} /></View>}
++        {needLevel && <View style={s.notice}><Text style={s.body}>{t.needLevel}</Text><Button secondary title={t.profile} onPress={() => void external('https://1-padel.com/perfil')} /></View>}
++        {individual && open && !existing && <View style={s.card}><Text style={s.sectionTitle}>{t.rules}</Text><Text style={s.label}>{t.cancellation}</Text><Text style={s.fact}>{eventDate(cancellationDeadline(event), event.timeZone, language)}</Text><Text style={s.body}>{event.type === 'CANCHA_ABIERTA' ? t.cancha : t.finance}</Text><Text style={s.body}>{t.arrival}</Text>{['KING_OF_COURT', 'AMERICANO'].includes(event.type) && <Text style={s.body}>{t.late}</Text>}<TouchableOpacity accessibilityRole="link" onPress={() => void external(event.websiteUrl)} style={s.textButton}><Text style={s.link}>{t.conditions} ↗</Text></TouchableOpacity></View>}
++        {individual && open && !existing && !needContact && !needLevel && <TouchableOpacity accessibilityRole="checkbox" accessibilityState={{ checked: accepted, disabled: busy }} disabled={busy} onPress={() => setAccepted(value => !value)} style={s.checkRow}><View style={[s.checkbox, accepted && s.checked]}><Text style={s.check}>{accepted ? '✓' : ''}</Text></View><Text style={s.consent}>{t.consent}</Text></TouchableOpacity>}
++      </>}
++      {error && !uncertain && !needLevel && !(error.code === 'CLOSED' && !open) && !(error.code === 'NOT_INDIVIDUAL' && !individual) && <Text accessibilityRole="alert" style={s.error}>{errorText}</Text>}
++      {!loading && (error || uncertain || needLevel) && !receipt && <Button secondary title={t.retry} disabled={busy} onPress={() => void check()} />}
++      {!loading && event && (uncertain || !individual || !open) && <Button secondary title={t.site} onPress={() => void external(event.websiteUrl)} />}
++    </ScrollView>
++    <View style={s.footer}><View style={s.footerInner}>{receipt || existing ? <Button title={t.myEvents} onPress={onMyEvents} /> : <><Text style={s.small}>{t.noPayment}</Text><Button title={busy ? t.sending : event?.available === 0 ? t.waitlist : t.join} disabled={busy || loading || !accepted || !individual || !open || !!needContact || !!needLevel || uncertain} onPress={() => {
++      if (!snapshot || !accepted) return;
++      const started = version.current;
++      void perform(async () => { const result = await booking.join(tournamentId, bookingQuote(snapshot.event)); if (started === version.current) { setReceipt(result); setAccepted(false); } });
++    }} /></>}</View></View>
++  </KeyboardAvoidingView>;
++}
++function Button({ title, onPress, disabled = false, secondary = false }: { title: string; onPress: () => void; disabled?: boolean; secondary?: boolean }) {
++  return <TouchableOpacity accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={onPress} style={[s.button, secondary && s.secondary, disabled && s.disabled]}><Text style={[s.buttonText, secondary && s.secondaryText]}>{title}</Text></TouchableOpacity>;
++}
++const s = StyleSheet.create({
++  screen: { flex: 1, backgroundColor: c.background }, top: { paddingHorizontal: 20, paddingBottom: 14, backgroundColor: c.white, borderBottomWidth: 1, borderColor: c.line }, back: { minHeight: 44, justifyContent: 'center', alignSelf: 'flex-start' }, link: { color: c.green, fontSize: 12, fontWeight: '700', lineHeight: 19 }, title: { color: c.ink, fontSize: 24, fontWeight: '800', letterSpacing: -0.6 },
++  content: { width: '100%', maxWidth: 520, alignSelf: 'center', padding: 20, gap: 14, paddingBottom: 26 }, card: { backgroundColor: c.white, padding: 18, borderRadius: 18, borderWidth: 1, borderColor: c.line }, eventTitle: { fontSize: 25, fontWeight: '800', letterSpacing: -0.6, color: c.ink, lineHeight: 31 }, sectionTitle: { fontSize: 17, lineHeight: 24, fontWeight: '800', color: c.ink, marginBottom: 8 }, label: { color: c.muted, fontSize: 11, lineHeight: 17, marginTop: 10 }, body: { fontSize: 13, lineHeight: 21, color: c.muted, marginTop: 7 }, fact: { color: c.ink, fontSize: 14, lineHeight: 22, fontWeight: '700', marginTop: 8 }, priceRow: { borderTopWidth: 1, borderColor: c.line, marginTop: 16, paddingTop: 12, flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'space-between', gap: 10 }, price: { color: c.ink, fontSize: 21, fontWeight: '800' },
++  input: { borderWidth: 1, borderColor: c.line, borderRadius: 11, paddingHorizontal: 12, minHeight: 49, color: c.ink, fontSize: 16, marginTop: 5, marginBottom: 8 }, notice: { backgroundColor: c.greenPale, borderRadius: 15, padding: 18 }, amber: { backgroundColor: c.amberPale }, result: { color: c.ink, fontSize: 23, fontWeight: '800', lineHeight: 29 }, state: { padding: 25, alignItems: 'center', gap: 10 }, error: { color: '#A13F31', fontSize: 13, lineHeight: 21 }, small: { color: c.muted, fontSize: 11, lineHeight: 18, textAlign: 'center', marginBottom: 7 }, demo: { padding: 10, textAlign: 'center', fontSize: 11, color: c.amber, backgroundColor: c.amberPale },
++  checkRow: { flexDirection: 'row', gap: 10, minHeight: 48, paddingVertical: 9 }, checkbox: { width: 22, height: 22, borderWidth: 1, borderColor: c.muted, borderRadius: 6, alignItems: 'center', justifyContent: 'center', marginTop: 1 }, checked: { backgroundColor: c.green, borderColor: c.green }, check: { color: c.white, fontSize: 15, fontWeight: '800' }, consent: { flex: 1, color: c.ink, fontSize: 13, lineHeight: 21 },
++  footer: { backgroundColor: c.white, borderTopWidth: 1, borderColor: c.line, paddingHorizontal: 20, paddingTop: 11, paddingBottom: 12 }, footerInner: { width: '100%', maxWidth: 480, alignSelf: 'center' }, button: { backgroundColor: c.orange, minHeight: 50, borderRadius: 13, padding: 12, alignItems: 'center', justifyContent: 'center', marginTop: 8 }, buttonText: { color: c.white, fontSize: 14, lineHeight: 21, fontWeight: '800', textAlign: 'center' }, secondary: { backgroundColor: c.white, borderWidth: 1, borderColor: c.line }, secondaryText: { color: c.ink }, disabled: { opacity: 0.4 }, textButton: { minHeight: 44, justifyContent: 'center', marginTop: 9 },
++});
+diff --git a/mobile-app/src/IndividualBookingLab.tsx b/mobile-app/src/IndividualBookingLab.tsx
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/src/IndividualBookingLab.tsx
+@@ -0,0 +1,44 @@
++import React, { useMemo, useState } from 'react';
++import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
++import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
++import IndividualBookingScreen from './IndividualBookingScreen';
++import { AuthError, PlayerRequestError } from './auth';
++import type { Registration } from './auth';
++import type { PublicTournament } from './schedule';
++import { createIndividualBooking } from './individualBooking';
++import { colors as c } from './theme';
++
++const options = ['Тренировка + игра', 'Cancha Abierta', 'Король корта', 'Americano', 'Лист ожидания', 'Уже записан', 'Нужен контакт', 'Нужен уровень', 'Изменилась цена', 'Обрыв связи'] as const;
++type Scenario = typeof options[number];
++function laboratory(scenario: Scenario, onWrite: () => void) {
++  const type = scenario === 'Cancha Abierta' ? 'CANCHA_ABIERTA' : scenario === 'Король корта' ? 'KING_OF_COURT' : scenario === 'Americano' || scenario === 'Нужен уровень' ? 'AMERICANO' : 'PADEL_CLINIC';
++  const event: PublicTournament = { id: 90001, name: 'Тестовое мероприятие', type, modality: 'INDIVIDUAL', gender: type === 'CANCHA_ABIERTA' ? 'MIXTO' : 'MASCULINO', level: type === 'CANCHA_ABIERTA' ? 'TODOS' : 'C8', club: { id: 1, name: 'Тестовый клуб', address: 'Пример адреса' }, startsAt: new Date(Date.now() + 7 * 86400000).toISOString(), timeZone: 'America/Argentina/Buenos_Aires', duration: '3 h', price: 43000, currency: 'ARS', status: 'REGISTRO_ABIERTO', capacity: 12, occupied: scenario === 'Лист ожидания' ? 12 : 8, available: scenario === 'Лист ожидания' ? 0 : 4, capacityUnit: 'PLAYERS', registrationOpen: true, waitlistCount: 2, cancellationDeadline: new Date(Date.now() + 6 * 86400000).toISOString(), description: null, websiteUrl: 'https://1-padel.com/' };
++  let hasContact = scenario !== 'Нужен контакт'; let detailReads = 0;
++  const row = (status: 'CONFIRMED' | 'WAITLIST'): Registration => ({ event, registrationId: event.id, active: true, status, waitlistPosition: status === 'WAITLIST' ? 3 : null });
++  let rows: Registration[] = scenario === 'Уже записан' ? [row('CONFIRMED')] : [];
++  const booking = createIndividualBooking({
++    details: async () => { if (scenario === 'Изменилась цена' && ++detailReads >= 2) event.price = 45000; return { ...event }; },
++    registrations: async () => [...rows], contactStatus: async () => ({ hasContact }),
++    saveContact: async () => { hasContact = true; return { success: true }; },
++    registerIndividual: async () => {
++      onWrite();
++      if (scenario === 'Нужен уровень') throw new PlayerRequestError({ needLevel: true, message: 'Укажите уровень', success: false });
++      const status = event.available === 0 ? 'WAITLIST' : 'CONFIRMED'; rows = [row(status)];
++      if (scenario === 'Обрыв связи') throw new AuthError('NETWORK');
++      return { success: true, status, waitlistPosition: status === 'WAITLIST' ? 3 : null };
++    },
++  });
++  return { booking, rows: () => [...rows] };
++}
++export default function IndividualBookingLab() {
++  const [scenario, setScenario] = useState<Scenario>('Тренировка + игра');
++  const [writes, setWrites] = useState(0); const [screen, setScreen] = useState<'booking' | 'events' | 'event'>('booking');
++  const lab = useMemo(() => laboratory(scenario, () => setWrites(value => value + 1)), [scenario]);
++  return <SafeAreaProvider><SafeAreaView style={s.root}>
++    <View style={s.header}><Text style={s.brand}>1-PADEL<Text style={{ color: c.orange }}>.</Text></Text><Text style={s.label}>Проверка новой записи</Text></View>
++    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabs} contentContainerStyle={s.tabContent}>{options.map(value => <TouchableOpacity key={value} accessibilityRole="tab" accessibilityState={{ selected: value === scenario }} onPress={() => { setWrites(0); setScreen('booking'); setScenario(value); }} style={[s.tab, value === scenario && s.active]}><Text style={[s.tabText, value === scenario && { color: c.white }]}>{value}</Text></TouchableOpacity>)}</ScrollView>
++    <Text style={s.counter}>Тестовых отправок: {writes}</Text>
++    {screen === 'booking' ? <IndividualBookingScreen key={scenario} tournamentId={90001} booking={lab.booking} language="ru" profileName="Игрок · тестовый аккаунт" demo onClose={() => setScreen('event')} onMyEvents={() => setScreen('events')} /> : <View style={s.page}><Text style={s.title}>{screen === 'events' ? 'Мои мероприятия · тест' : 'Тестовое мероприятие'}</Text>{screen === 'events' && lab.rows().map(row => <View key={row.registrationId} style={s.card}><Text style={s.title}>{scenario}</Text><Text style={s.label}>{row.status === 'WAITLIST' ? 'Лист ожидания · позиция 3' : 'Участие подтверждено'}</Text></View>)}<TouchableOpacity accessibilityRole="button" onPress={() => setScreen('booking')} style={s.button}><Text style={s.buttonText}>Открыть экран записи</Text></TouchableOpacity><Text style={s.label}>Только вымышленные данные. На сайт ничего не отправляется.</Text></View>}
++  </SafeAreaView></SafeAreaProvider>;
++}
++const s = StyleSheet.create({ root: { flex: 1, backgroundColor: c.white }, header: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 10 }, brand: { fontWeight: '900', fontSize: 22, color: c.ink, letterSpacing: -1 }, label: { fontSize: 11, color: c.muted, lineHeight: 19 }, tabs: { flexGrow: 0, maxHeight: 56 }, tabContent: { paddingHorizontal: 16, paddingVertical: 8, gap: 7 }, tab: { paddingHorizontal: 12, borderRadius: 19, borderWidth: 1, borderColor: c.line, minHeight: 35, justifyContent: 'center' }, active: { backgroundColor: c.ink }, tabText: { fontSize: 11, color: c.ink, fontWeight: '600' }, counter: { fontSize: 10, color: c.muted, paddingHorizontal: 20, paddingBottom: 8 }, page: { flex: 1, backgroundColor: c.background, padding: 20 }, title: { fontSize: 20, fontWeight: '800', color: c.ink, marginBottom: 12 }, card: { borderRadius: 15, padding: 18, backgroundColor: c.white, marginVertical: 12 }, button: { backgroundColor: c.orange, padding: 15, borderRadius: 12, alignItems: 'center', marginVertical: 15 }, buttonText: { fontSize: 14, fontWeight: '700', color: c.white } });
+diff --git a/mobile-app/src/bookingCopy.ts b/mobile-app/src/bookingCopy.ts
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/src/bookingCopy.ts
+@@ -0,0 +1,56 @@
++export const bookingCopy = {
++  ru: {
++    title: 'Запись на мероприятие', back: 'Назад', loading: 'Проверяем мероприятие и вашу запись…', retry: 'Проверить ещё раз',
++    person: 'Участник', individual: 'Индивидуально', price: 'Стоимость за человека', cancellation: 'Отмена доступна до',
++    rules: 'Условия участия', finance: 'При поздней отмене участие оплачивается полностью. Если ваше место займёт и оплатит другой игрок, оплата не взимается или возвращается.',
++    arrival: 'Приезжайте за 15 минут до начала.', late: 'За опоздание на этот турнир предусмотрен стартовый штраф −10 очков.',
++    cancha: 'Если не сможете прийти, заранее сообщите организатору, чтобы освободить место другому игроку.',
++    conditions: 'Условия на странице мероприятия', consent: 'Проверил мероприятие, стоимость и условия участия',
++    join: 'Подтвердить запись', waitlist: 'Встать в лист ожидания', sending: 'Отправляем заявку…', noPayment: 'Запись без списания средств',
++    contact: 'Нужен контакт для организатора', contactHint: 'Укажите WhatsApp или Telegram. Достаточно одного контакта.', phone: 'WhatsApp', telegram: 'Telegram', saveContact: 'Сохранить контакт',
++    confirmed: 'Запись подтверждена', waiting: 'Вы в листе ожидания', already: 'Вы уже записаны', existing: 'Ваша заявка уже существует',
++    confirmedBody: 'Место подтверждено сайтом. Запись доступна в «Моих мероприятиях».', waitBody: 'Место в основном составе пока не подтверждено. При изменении статуса придёт уведомление.', position: 'Позиция в листе ожидания', myEvents: 'Мои мероприятия',
++    uncertain: 'Проверим, создалась ли запись', uncertainBody: 'Ответ сайта не получен. Заявка могла сохраниться. Проверьте её состояние — повторно она не отправится.',
++    unconfirmed: 'Запись пока не найдена. Не отправляйте новую заявку: первый запрос ещё мог обрабатываться. Проверьте ещё раз или откройте мероприятие на сайте.',
++    changed: 'Цена, условия или наличие мест изменились. Проверьте обновлённые данные и подтвердите заново.',
++    closed: 'Запись на это мероприятие закрыта.', notIndividual: 'Для этого формата предусмотрен другой способ записи. Откройте мероприятие на сайте.',
++    needLevel: 'Для этого турнира нужно указать свой уровень. Заполните его в профиле сайта и вернитесь проверить запись.', profile: 'Открыть профиль сайта',
++    forbidden: 'Сайт не разрешил выполнить действие. Проверьте аккаунт или откройте мероприятие на сайте.', rejected: 'Сайт не принял заявку.',
++    review: 'Сессия обновилась. Проверьте данные перед новым подтверждением.', unavailable: 'Не удалось проверить запись. Попробуйте ещё раз.', demo: 'Тестовый режим · настоящие заявки не отправляются',
++    site: 'Открыть мероприятие на сайте', openInline: 'Записаться', waitInline: 'В лист ожидания', inlineNote: 'Подтверждение записи — внутри приложения.',
++  },
++  es: {
++    title: 'Inscripción al evento', back: 'Volver', loading: 'Revisando el evento y tu inscripción…', retry: 'Volver a comprobar',
++    person: 'Participante', individual: 'Individual', price: 'Precio por persona', cancellation: 'Podés cancelar hasta',
++    rules: 'Condiciones', finance: 'Si cancelás después del plazo, debés abonar la inscripción completa. Si otro jugador ocupa y paga tu lugar, no se cobra o se reintegra el importe.',
++    arrival: 'Llegá 15 minutos antes del inicio.', late: 'La llegada tarde a este torneo tiene una penalización inicial de −10 puntos.',
++    cancha: 'Si no podés venir, avisale al organizador con anticipación para liberar tu lugar.', conditions: 'Condiciones en la página del evento', consent: 'Revisé el evento, el precio y las condiciones',
++    join: 'Confirmar inscripción', waitlist: 'Anotarme en lista de espera', sending: 'Enviando inscripción…', noPayment: 'La inscripción no realiza ningún cobro',
++    contact: 'Necesitamos un contacto', contactHint: 'Ingresá WhatsApp o Telegram. Con uno alcanza.', phone: 'WhatsApp', telegram: 'Telegram', saveContact: 'Guardar contacto',
++    confirmed: 'Inscripción confirmada', waiting: 'Estás en lista de espera', already: 'Ya estás inscripto', existing: 'Tu inscripción ya existe',
++    confirmedBody: 'La web confirmó tu lugar. Podés verlo en «Mis eventos».', waitBody: 'Todavía no tenés lugar confirmado. Recibirás un aviso cuando cambie tu estado.', position: 'Posición en lista de espera', myEvents: 'Mis eventos',
++    uncertain: 'Comprobemos tu inscripción', uncertainBody: 'No recibimos la respuesta. La inscripción pudo guardarse. Comprobá el estado; no se enviará de nuevo.',
++    unconfirmed: 'Todavía no aparece. No envíes otra solicitud: la primera podría seguir procesándose. Volvé a comprobar o abrí el evento en la web.',
++    changed: 'Cambió el precio, las condiciones o la disponibilidad. Revisá los datos y confirmá de nuevo.', closed: 'La inscripción está cerrada.', notIndividual: 'Este formato usa otro tipo de inscripción. Abrí el evento en la web.',
++    needLevel: 'Para este torneo necesitás indicar tu nivel. Completalo en tu perfil de la web y volvé a comprobar.', profile: 'Abrir perfil de la web', forbidden: 'La web no permitió esta acción. Revisá tu cuenta o abrí el evento en la web.', rejected: 'La web rechazó la inscripción.',
++    review: 'Se renovó la sesión. Revisá los datos antes de confirmar otra vez.', unavailable: 'No pudimos comprobar tu inscripción. Intentá de nuevo.', demo: 'Modo de prueba · no se envían inscripciones reales',
++    site: 'Abrir evento en la web', openInline: 'Inscribirme', waitInline: 'Lista de espera', inlineNote: 'Confirmá la inscripción desde la aplicación.',
++  },
++  en: {
++    title: 'Event registration', back: 'Back', loading: 'Checking the event and your registration…', retry: 'Check again',
++    person: 'Participant', individual: 'Individual', price: 'Price per person', cancellation: 'Cancellation available until',
++    rules: 'Participation terms', finance: 'Late cancellation requires full payment. If another player takes and pays for your place, you will not be charged or will receive a refund.',
++    arrival: 'Arrive 15 minutes before the start.', late: 'Arriving late to this tournament carries an initial −10 point penalty.',
++    cancha: 'If you cannot attend, tell the organiser in advance so another player can take your place.', conditions: 'Terms on the event page', consent: 'I checked the event, price and participation terms',
++    join: 'Confirm registration', waitlist: 'Join waitlist', sending: 'Sending registration…', noPayment: 'Registration does not charge your account',
++    contact: 'The organiser needs a contact', contactHint: 'Enter WhatsApp or Telegram. Either one is enough.', phone: 'WhatsApp', telegram: 'Telegram', saveContact: 'Save contact',
++    confirmed: 'Registration confirmed', waiting: 'You are on the waitlist', already: 'You are already registered', existing: 'Your registration already exists',
++    confirmedBody: 'The website confirmed your place. Find it in My events.', waitBody: 'Your place is not confirmed yet. You will be notified when your status changes.', position: 'Waitlist position', myEvents: 'My events',
++    uncertain: 'Check whether you registered', uncertainBody: 'The website response did not arrive. Your registration may have been saved. Check its status; it will not be sent again.',
++    unconfirmed: 'No registration is visible yet. Do not send another request: the first may still be processing. Check again or open the event on the website.',
++    changed: 'The price, terms or availability changed. Check the updated information and confirm again.', closed: 'Registration is closed.', notIndividual: 'This format has a different registration flow. Open the event on the website.',
++    needLevel: 'This tournament requires your player level. Set it in your website profile, then return and check again.', profile: 'Open website profile', forbidden: 'The website did not allow this action. Check your account or open the event on the website.', rejected: 'The website rejected the registration.',
++    review: 'Your session was renewed. Review the information before confirming again.', unavailable: 'Could not check your registration. Please try again.', demo: 'Test mode · no real registrations are sent',
++    site: 'Open event on website', openInline: 'Register', waitInline: 'Join waitlist', inlineNote: 'Confirm your registration in the app.',
++  },
++};
+diff --git a/mobile-app/src/bookingIntent.ts b/mobile-app/src/bookingIntent.ts
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/src/bookingIntent.ts
+@@ -0,0 +1,19 @@
++const key = 'onepadel.pendingIndividual.v1';
++// Только ID выбранного события, не подтверждение и не личные данные.
++export function saveBookingIntent(id: number | null) {
++  try {
++    if (typeof window === 'undefined') return;
++    if (id === null) window.sessionStorage.removeItem(key);
++    else window.sessionStorage.setItem(key, JSON.stringify({ id, at: Date.now() }));
++  } catch { /* Вход доступен и без sessionStorage; пользователь выберет событие снова. */ }
++}
++export function readBookingIntent(): number | null {
++  try {
++    if (typeof window === 'undefined') return null;
++    const raw = window.sessionStorage.getItem(key);
++    if (!raw) return null;
++    const value = JSON.parse(raw);
++    if (Number.isSafeInteger(value?.id) && value.id > 0 && typeof value.at === 'number' && Date.now() - value.at >= 0 && Date.now() - value.at < 1800000) return value.id;
++  } catch { /* Повреждённые/недоступные данные не создают запись. */ }
++  return null;
++}
+diff --git a/mobile-app/tests/individualBooking.test.mjs b/mobile-app/tests/individualBooking.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/tests/individualBooking.test.mjs
+@@ -0,0 +1,119 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++import { AuthError, PlayerRequestError } from '../src/auth.ts';
++import { createIndividualBooking, bookingQuote, cancellationDeadline, isIndividualEvent } from '../src/individualBooking.ts';
++import { bookingCopy } from '../src/bookingCopy.ts';
++
++function fixture() {
++  const state = { event: { id: 42, name: 'Training', type: 'PADEL_CLINIC', modality: 'INDIVIDUAL', gender: 'MASCULINO', level: 'C9_C8', status: 'REGISTRO_ABIERTO', registrationOpen: true, startsAt: new Date(Date.now() + 4 * 86400000).toISOString(), timeZone: 'America/Argentina/Buenos_Aires', club: { id: 1, name: 'Test club' }, price: 43000, currency: 'ARS', available: 1, cancellationDeadline: null }, rows: [], hasContact: true, writes: 0, saves: 0, result: { success: true, status: 'CONFIRMED', waitlistPosition: null } };
++  const transport = {
++    details: async () => ({ ...state.event }), registrations: async () => [...state.rows], contactStatus: async () => ({ hasContact: state.hasContact }),
++    saveContact: async () => { state.saves++; state.hasContact = true; return { success: true }; },
++    registerIndividual: async () => { state.writes++; return state.result; },
++  };
++  return { state, transport, client: createIndividualBooking(transport), row: (status = 'CONFIRMED') => ({ event: state.event, active: true, status, waitlistPosition: status === 'WAITLIST' ? 3 : null }) };
++}
++test('all four individual families can join; doubles Americano and incompatible modalities are excluded', () => {
++  for (const type of ['KING_OF_COURT', 'AMERICANO', 'PADEL_CLINIC', 'CANCHA_ABIERTA']) assert.equal(isIndividualEvent({ type, modality: 'INDIVIDUAL' }), true);
++  for (const event of [{ type: 'AMERICANO_TEAMS', modality: 'DOBLES' }, { type: 'AMERICANO', modality: 'DOBLES' }, { type: 'CANCHA_ABIERTA', modality: 'DOBLES' }]) assert.equal(isIndividualEvent(event), false);
++});
++test('no mutation while loading/reviewing; explicit join returns only server confirmation', async () => {
++  const f = fixture(); const snapshot = await f.client.load(42);
++  assert.equal(f.state.writes, 0);
++  assert.deepEqual(await f.client.join(42, bookingQuote(snapshot.event)), { status: 'CONFIRMED', waitlistPosition: null, existing: false });
++  assert.equal(f.state.writes, 1);
++});
++test('a last place lost between confirmation and commit returns WAITLIST, not an invented success', async () => {
++  const f = fixture(); f.state.result = { success: true, status: 'WAITLIST', waitlistPosition: 5 };
++  const result = await f.client.join(42, bookingQuote(f.state.event));
++  assert.equal(result.status, 'WAITLIST'); assert.equal(result.waitlistPosition, 5); assert.equal(f.state.writes, 1);
++});
++test('existing own registration suppresses duplicate POST and another event does not block this one', async () => {
++  const f = fixture(); f.state.rows = [f.row('WAITLIST')];
++  assert.deepEqual(await f.client.join(42, bookingQuote(f.state.event)), { status: 'WAITLIST', waitlistPosition: 3, existing: true });
++  assert.equal(f.state.writes, 0);
++  f.state.rows = [{ ...f.row(), event: { ...f.state.event, id: 99 } }];
++  await f.client.join(42, bookingQuote(f.state.event)); assert.equal(f.state.writes, 1);
++});
++test('price, currency, cutoff, audience and transition into waitlist all require new review', async () => {
++  for (const change of [{ price: 44000 }, { currency: 'USD' }, { cancellationDeadline: new Date(Date.now() + 86400000).toISOString() }, { description: 'Changed terms' }, { available: 0 }, { level: 'C7' }, { club: { id: 2, name: 'Other club' } }]) {
++    const f = fixture(); const quote = bookingQuote(f.state.event); Object.assign(f.state.event, change);
++    await assert.rejects(f.client.join(42, quote), { code: 'CHANGED' }); assert.equal(f.state.writes, 0);
++  }
++});
++test('closed, published, started, doubles and missing contact never send individual POST', async () => {
++  for (const [change, expected] of [[{ registrationOpen: false }, 'CLOSED'], [{ status: 'PUBLICADO' }, 'CLOSED'], [{ startsAt: new Date(Date.now() - 1000).toISOString() }, 'CLOSED'], [{ modality: 'DOBLES' }, 'NOT_INDIVIDUAL']]) {
++    const f = fixture(); Object.assign(f.state.event, change);
++    await assert.rejects(f.client.join(42, bookingQuote(f.state.event)), { code: expected }); assert.equal(f.state.writes, 0);
++  }
++  const f = fixture(); f.state.hasContact = false;
++  await assert.rejects(f.client.join(42, bookingQuote(f.state.event)), { code: 'NEED_CONTACT' }); assert.equal(f.state.writes, 0);
++});
++test('malformed read contract blocks mutation; own data never treated as empty on failure', async () => {
++  const f = fixture(); f.transport.registrations = async () => { throw new AuthError('NETWORK'); };
++  const client = createIndividualBooking(f.transport);
++  await assert.rejects(client.join(42, bookingQuote(f.state.event)), { code: 'NETWORK' }); assert.equal(f.state.writes, 0);
++  f.transport.registrations = async () => []; f.transport.contactStatus = async () => ({});
++  await assert.rejects(client.load(42), { code: 'UNAVAILABLE' });
++});
++test('duplicate tap is blocked while a request is in flight', async () => {
++  const f = fixture(); let respond;
++  f.transport.registerIndividual = () => { f.state.writes++; return new Promise(resolve => { respond = resolve; }); };
++  const client = createIndividualBooking(f.transport); const first = client.join(42, bookingQuote(f.state.event));
++  await assert.rejects(client.join(42, bookingQuote(f.state.event)), { code: 'BUSY' });
++  await new Promise(resolve => setImmediate(resolve)); respond(f.state.result); await first;
++  assert.equal(f.state.writes, 1);
++});
++test('logout or account switch during preflight cannot register the new account using an old screen', async () => {
++  const f = fixture(); let version = 1; let reply;
++  f.transport.sessionVersion = () => version;
++  f.transport.details = () => new Promise(resolve => { reply = resolve; });
++  const client = createIndividualBooking(f.transport);
++  const pending = client.join(42, bookingQuote(f.state.event));
++  version++; reply(f.state.event);
++  await assert.rejects(pending, { code: 'CANCELLED' }); assert.equal(f.state.writes, 0);
++  await assert.rejects(client.load(42), { code: 'CANCELLED' });
++});
++test('network loss after the server commits: reconcile finds the record, never repeats POST', async () => {
++  const f = fixture();
++  f.transport.registerIndividual = async () => { f.state.writes++; f.state.rows = [f.row()]; throw new AuthError('NETWORK'); };
++  const client = createIndividualBooking(f.transport);
++  await assert.rejects(client.join(42, bookingQuote(f.state.event)), { code: 'UNCERTAIN' });
++  await assert.rejects(client.join(42, bookingQuote(f.state.event)), { code: 'UNCERTAIN' });
++  const restored = await client.reconcile(42);
++  assert.equal(restored.receipt.status, 'CONFIRMED'); assert.equal(restored.uncertain, false); assert.equal(f.state.writes, 1);
++});
++test('an absent record after timeout still does not permit an automatic resend', async () => {
++  const f = fixture(); f.transport.registerIndividual = async () => { f.state.writes++; throw new AuthError('NETWORK'); };
++  const client = createIndividualBooking(f.transport);
++  await assert.rejects(client.join(42, bookingQuote(f.state.event)), { code: 'UNCERTAIN' });
++  assert.equal((await client.reconcile(42)).uncertain, true);
++  await assert.rejects(client.join(42, bookingQuote(f.state.event)), { code: 'UNCERTAIN' }); assert.equal(f.state.writes, 1);
++});
++test('needLevel and needContact are server rejections, not confirmations or uncertain writes', async () => {
++  for (const key of ['needLevel', 'needContact']) {
++    const f = fixture(); f.transport.registerIndividual = async () => { throw new PlayerRequestError({ success: false, [key]: true, message: 'test rejection' }); };
++    const client = createIndividualBooking(f.transport);
++    await assert.rejects(client.join(42, bookingQuote(f.state.event)), error => error.code === 'REJECTED' && error[key]);
++    assert.equal(client.isUncertain(42), false);
++  }
++});
++test('HTML/malformed/unknown-success responses cannot create a confirmation', async () => {
++  for (const reply of ['<html>login</html>', { success: true, status: 'PAIR_REGISTERED' }, { success: true, status: 'WAITLIST', waitlistPosition: -1 }, { status: 'CONFIRMED' }]) {
++    const f = fixture(); f.state.result = reply;
++    await assert.rejects(f.client.join(42, bookingQuote(f.state.event)), { code: 'UNCERTAIN' }); assert.equal(f.client.isUncertain(42), true);
++  }
++});
++test('contact save accepts either channel, validates both, and does not register automatically', async () => {
++  const f = fixture(); f.state.hasContact = false;
++  await assert.rejects(f.client.saveContact({}), { code: 'NEED_CONTACT' });
++  await assert.rejects(f.client.saveContact({ telefono: 'bad', telegramUsername: '@valid_name' }), { code: 'NEED_CONTACT' });
++  await f.client.saveContact({ telegramUsername: '@valid_name' });
++  assert.equal((await f.client.load(42)).hasContact, true); assert.equal(f.state.saves, 1); assert.equal(f.state.writes, 0);
++});
++test('custom cancellation deadline is kept; default is start minus 24 hours', () => {
++  const f = fixture(); assert.equal(Date.parse(f.state.event.startsAt) - Date.parse(cancellationDeadline(f.state.event)), 86400000);
++  f.state.event.cancellationDeadline = '2030-01-01T12:00:00-03:00'; assert.equal(cancellationDeadline(f.state.event), f.state.event.cancellationDeadline);
++  assert.deepEqual(Object.keys(bookingCopy.ru).sort(), Object.keys(bookingCopy.es).sort());
++  assert.deepEqual(Object.keys(bookingCopy.ru).sort(), Object.keys(bookingCopy.en).sort());
++});
+diff --git a/mobile-app/tests/authMutations.test.mjs b/mobile-app/tests/authMutations.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/tests/authMutations.test.mjs
+@@ -0,0 +1,42 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++import { createAuthClient } from '../src/auth.ts';
++const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
++const token = { accessToken: 'test-access', refreshToken: 'test-refresh', expiresIn: 60000 };
++const player = { id: 4, email: 'test@example.test', nombreCompleto: 'Test Player' };
++function fixture(reply) {
++  let saved = null; const calls = [];
++  const client = createAuthClient({ store: { get: async () => saved, set: async value => { saved = value; } }, fetchImpl: async (url, init) => {
++    calls.push({ url, init });
++    if (url.endsWith('/login') || url.endsWith('/refresh')) return json(token);
++    if (url.endsWith('/me')) return json(player);
++    return reply(url, init);
++  } });
++  return { client, calls };
++}
++test('authenticated registration sends one empty POST over HTTPS with no cookies or player ID', async () => {
++  const f = fixture(() => json({ success: true, status: 'CONFIRMED' })); await f.client.login(player.email, 'test-only-password');
++  await f.client.registerIndividual(42);
++  const call = f.calls.at(-1); assert.equal(call.url, 'https://1-padel.com/players/tournaments/42/register');
++  assert.equal(call.init.method, 'POST'); assert.equal(call.init.body, undefined); assert.equal(call.init.credentials, 'omit');
++  assert.equal(call.init.headers.Authorization, 'Bearer test-access');
++  assert.equal(f.calls.filter(call => call.init.method === 'POST' && call.url.endsWith('/register')).length, 1);
++});
++test('business flags and rejection text survive JSON 400 and success=false', async () => {
++  for (const status of [200, 400]) {
++    const f = fixture(() => json({ success: false, message: 'Set your level', needLevel: true }, status)); await f.client.login(player.email, 'test-only-password');
++    await assert.rejects(f.client.registerIndividual(42), error => error.code === 'REJECTED' && error.needLevel && error.detail === 'Set your level');
++  }
++});
++test('401 renews tokens but does not replay a mutation; 403 does not falsely classify player as organizer', async () => {
++  for (const status of [401, 403]) {
++    const f = fixture(() => json({}, status)); await f.client.login(player.email, 'test-only-password');
++    await assert.rejects(f.client.registerIndividual(42), { code: status === 401 ? 'REVIEW_REQUIRED' : 'FORBIDDEN' });
++    assert.equal(f.calls.filter(call => call.url.endsWith('/register')).length, 1);
++  }
++});
++test('contact PATCH uses the same private session and does not include user ID', async () => {
++  const f = fixture(() => json({ success: true })); await f.client.login(player.email, 'test-only-password');
++  await f.client.saveContact({ telegramUsername: '@test_person' }); const call = f.calls.at(-1);
++  assert.equal(call.init.method, 'PATCH'); assert.equal(call.init.credentials, 'omit'); assert.deepEqual(JSON.parse(call.init.body), { telegramUsername: '@test_person' });
++});
+diff --git a/mobile-app/tests/bookingIntent.test.mjs b/mobile-app/tests/bookingIntent.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/tests/bookingIntent.test.mjs
+@@ -0,0 +1,17 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++import { saveBookingIntent, readBookingIntent } from '../src/bookingIntent.ts';
++test('Google return keeps only the event ID, survives repeated initialization and clears on cancel/completion', () => {
++  const values = new Map();
++  globalThis.window = { sessionStorage: { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) } };
++  try {
++    saveBookingIntent(42); assert.equal(readBookingIntent(), 42); assert.equal(readBookingIntent(), 42);
++    assert.deepEqual(Object.keys(JSON.parse([...values.values()][0])).sort(), ['at', 'id']);
++    values.set('onepadel.pendingIndividual.v1', JSON.stringify({ id: 42, at: Date.now() - 31 * 60000 })); assert.equal(readBookingIntent(), null);
++    saveBookingIntent(null); assert.equal(readBookingIntent(), null);
++  } finally { delete globalThis.window; }
++});
++test('blocked or damaged storage does not break login and never triggers a registration', () => {
++  globalThis.window = { get sessionStorage() { throw new Error('blocked'); } };
++  try { assert.doesNotThrow(() => saveBookingIntent(42)); assert.equal(readBookingIntent(), null); } finally { delete globalThis.window; }
++});
+diff --git a/mobile-app/scripts/build-site.mjs b/mobile-app/scripts/build-site.mjs
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/scripts/build-site.mjs
+@@ -0,0 +1,12 @@
++import { spawnSync } from 'node:child_process';
++import { cpSync, mkdirSync, rmSync } from 'node:fs';
++import { fileURLToPath } from 'node:url';
++import path from 'node:path';
++const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
++if (path.basename(root) !== 'mobile-app') throw new Error('Разместите исходники в mobile-app/ серверного репозитория.');
++const build = spawnSync(process.execPath, [path.join(root, 'node_modules/expo/bin/cli'), 'export', '--platform', 'web', '--output-dir', 'dist-auth-web'], { cwd: root, env: { ...process.env, PADEL_WEB_BASE_PATH: '/app' }, stdio: 'inherit' });
++if (build.status !== 0) process.exit(build.status ?? 1);
++const target = path.resolve(root, '../src/main/resources/static/app');
++rmSync(target, { recursive: true, force: true });
++mkdirSync(target, { recursive: true });
++cpSync(path.join(root, 'dist-auth-web'), target, { recursive: true });
