@@ -1,0 +1,738 @@
+diff --git a/mobile-app/App.js b/mobile-app/App.js
+--- a/mobile-app/App.js
++++ b/mobile-app/App.js
+@@ -14,6 +14,7 @@
+ import IndividualBookingScreen from './src/IndividualBookingScreen';
+ import { readBookingIntent, saveBookingIntent } from './src/bookingIntent';
+ import IndividualBookingLab from './src/IndividualBookingLab';
++import IndividualCancellationLab from './src/IndividualCancellationLab';
+ 
+ const players = ['Анна', 'Борис', 'Клара', 'Денис'];
+ const demoCourt = [0, 1, 2, 3];
+@@ -134,6 +135,7 @@
+ }
+ 
+ export default function App() {
++  if (Platform.OS === 'web' && typeof window !== 'undefined' && new URL(window.location.href).searchParams.get('screen') === 'individual-cancellation-test') return <IndividualCancellationLab />;
+   if (Platform.OS === 'web' && typeof window !== 'undefined' && new URL(window.location.href).searchParams.get('screen') === 'individual-booking-test') return <IndividualBookingLab />;
+   return <AuthProvider><AppContent /></AuthProvider>;
+ }
+diff --git a/mobile-app/README.md b/mobile-app/README.md
+--- a/mobile-app/README.md
++++ b/mobile-app/README.md
+@@ -47,3 +47,17 @@
+ Изолированная проверка того же экрана: `/?screen=individual-booking-test`. Это отдельная модель с вымышленными данными, без запросов записи на сайт. В ней доступны четыре формата, резерв, существующая запись, контакт, уровень, изменение цены и обрыв связи. Не использовать этот режим как доказательство реальной регистрации на проде.
+ 
+ Известные границы: проверка цены/условий перед POST не является атомарной серверной фиксацией цены. У API нет idempotency key: защита от повторов опирается на отсутствие автоматического повтора, сверку своих записей и серверную уникальность регистрации. После закрытия/перезагрузки клиента память о неоднозначном POST теряется, но новый вход в экран сначала проверяет существующую запись. Отмена через приложение и парные ветки в этот инкремент не входят.
++
++## Индивидуальная отмена (2026-10-20)
++
++В «Моих мероприятиях» у предстоящих индивидуальных записей появляется «Отменить запись».
++Поддержаны King of Court, индивидуальный Americano, Padel Clinic и Cancha Abierta; пары продолжают использовать сайт.
++Открытие экрана не изменяет запись. Перед POST заново проверяются публичные детали, собственная активная запись,
++её статус, дата создания и фактический срок отмены. Изменения сбрасывают согласие.
++Сервер остаётся источником окончательного решения. После подтверждённого ответа и возврата список загружается заново.
++Причина необязательна (до 500 символов), передаётся как URL-encoded form body в существующий
++`POST /players/tournaments/{id}/cancel`; playerId, cookies и reason в URL не передаются.
++
++`?screen=individual-cancellation-test` — изолированные вымышленные сценарии того же компонента, без запросов к сайту.
++Тестовый маршрут не является доказательством реальной отмены на сервере.
++Подробная сверка правил и ограничения: `docs/mobile-individual-cancellation.md` в корне серверного проекта.
+diff --git a/mobile-app/src/auth.ts b/mobile-app/src/auth.ts
+--- a/mobile-app/src/auth.ts
++++ b/mobile-app/src/auth.ts
+@@ -8,7 +8,7 @@
+ export type Profile = { id: number; email: string; name: string };
+ export type Session = { accessToken: string; refreshToken: string; expiresAt: number };
+ // status === null — турнир из истории: сервер отдаёт только сам турнир, без статуса записи.
+-export type Registration = { registrationId: number; status: string | null; active: boolean; waitlistPosition: number | null; event: PublicTournament };
++export type Registration = { registrationId: number; status: string | null; active: boolean; waitlistPosition: number | null; event: PublicTournament; registeredAt?: string | null };
+ export const registrationStatuses = ['CONFIRMED', 'WAITLIST', 'WAITLIST_INVITED', 'CANCELLED', 'PARTICIPATED', 'PENDING_PARTNER', 'PARTNER_INVITED', 'PAIR_REGISTERED', 'SOLO_ADD_LATER', 'SOLO_SEARCH', 'SOLO_EXPIRED'] as const;
+ export class AuthError extends Error {
+   code: string;
+@@ -24,7 +24,7 @@
+     this.needLevel = data.needLevel === true;
+   }
+ }
+-type PlayerRequest = { method?: 'GET' | 'POST' | 'PATCH'; body?: unknown; business?: boolean };
++type PlayerRequest = { method?: 'GET' | 'POST' | 'PATCH'; body?: unknown; form?: Record<string, string>; business?: boolean };
+ type Store = { get: () => Promise<string | null>; set: (token: string | null) => Promise<void> };
+ function record(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
+ function text(value: unknown): value is string { return typeof value === 'string' && value.length > 0; }
+@@ -95,7 +95,7 @@
+     if (!record(item) || !registrationStatuses.includes(item.registrationStatus as typeof registrationStatuses[number])
+       || !(item.waitlistPosition == null || Number.isSafeInteger(item.waitlistPosition) && Number(item.waitlistPosition) > 0)) throw new AuthError('UNAVAILABLE');
+     const event = tournamentFromDto(item.tournament, base);
+-    return { registrationId: event.id, status: String(item.registrationStatus), active: true, waitlistPosition: (item.waitlistPosition as number | null | undefined) ?? null, event };
++    return { registrationId: event.id, status: String(item.registrationStatus), active: true, waitlistPosition: (item.waitlistPosition as number | null | undefined) ?? null, event, registeredAt: typeof item.registrationDate === 'string' ? item.registrationDate : null };
+   });
+   const historical = value.historical.map(item => {
+     const event = tournamentFromDto(item, base);
+@@ -122,8 +122,8 @@
+     const timer = setTimeout(() => controller.abort(), timeoutMs);
+     try {
+       const response = await fetchImpl(base + path, { method: options.method ?? (body === undefined ? 'GET' : 'POST'),
+-        headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
+-        ...(body === undefined ? {} : { body: JSON.stringify(body) }), credentials: 'omit', cache: 'no-store', redirect: 'manual', signal: controller.signal });
++        headers: { Accept: 'application/json', ...(options.form ? { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' } : body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
++        ...(options.form ? { body: new URLSearchParams(options.form).toString() } : body === undefined ? {} : { body: JSON.stringify(body) }), credentials: 'omit', cache: 'no-store', redirect: 'manual', signal: controller.signal });
+       // Без действующего токена сервер не отвечает 401, а редиректит /api/** на /login.
+       if (response.type === 'opaqueredirect' || response.status === 0 || response.status >= 300 && response.status < 400) throw new AuthError('SESSION_EXPIRED');
+       if (response.status === 429) throw new AuthError('RATE_LIMIT');
+@@ -225,6 +225,11 @@
+       if (!Number.isSafeInteger(tournamentId) || tournamentId < 1) throw new AuthError('UNAVAILABLE');
+       return authorized(`/players/tournaments/${tournamentId}/register`, { method: 'POST', business: true });
+     },
++    async cancelIndividual(tournamentId: number, reason = '') {
++      if (!Number.isSafeInteger(tournamentId) || tournamentId < 1 || reason.length > 500) throw new AuthError('UNAVAILABLE');
++      // @RequestParam принимает форму; причина не попадает в URL/историю/логи прокси.
++      return authorized(`/players/tournaments/${tournamentId}/cancel`, { method: 'POST', form: { reason: reason.trim() }, business: true });
++    },
+     sessionVersion() { return epoch; },
+     cancelPending() { epoch++; refreshTask = null; },
+     logout: clear,
+diff --git a/mobile-app/src/AuthContext.tsx b/mobile-app/src/AuthContext.tsx
+--- a/mobile-app/src/AuthContext.tsx
++++ b/mobile-app/src/AuthContext.tsx
+@@ -5,6 +5,7 @@
+ import type { Profile } from './auth';
+ import { createNativeSessionStore, createWebSessionStore } from './sessionStore';
+ import { createIndividualBooking } from './individualBooking';
++import { createIndividualCancellation } from './individualCancellation';
+ import { createScheduleClient } from './schedule';
+ 
+ const secureKey = 'onepadel.refresh.v1';
+@@ -18,7 +19,7 @@
+ 
+ type Auth = { profile: Profile | null; restoring: boolean; restoreError: string | null; googleCode: string | null;
+   login: (email: string, password: string) => Promise<void>; google: () => Promise<void>; cancelGoogle: () => void;
+-  logout: () => Promise<void>; retryRestore: () => Promise<void>; client: ReturnType<typeof createAuthClient>; booking: ReturnType<typeof createIndividualBooking> };
++  logout: () => Promise<void>; retryRestore: () => Promise<void>; client: ReturnType<typeof createAuthClient>; booking: ReturnType<typeof createIndividualBooking>; cancellation: ReturnType<typeof createIndividualCancellation> };
+ const Context = createContext<Auth | null>(null);
+ export function AuthProvider({ children }: { children: React.ReactNode }) {
+   const [profile, setProfile] = useState<Profile | null>(null);
+@@ -33,6 +34,11 @@
+     const baseUrl = Platform.OS === 'web' && typeof window !== 'undefined' && window.location.protocol === 'https:' && ['1-padel.com', 'www.1-padel.com'].includes(window.location.hostname) ? window.location.origin : 'https://1-padel.com';
+     const schedule = createScheduleClient({ baseUrl });
+     return createIndividualBooking({ ...client, details: id => schedule.details(id, 'es') });
++  }, [client, profile?.id]);
++  const cancellation = useMemo(() => {
++    const baseUrl = Platform.OS === 'web' && typeof window !== 'undefined' && window.location.protocol === 'https:' && ['1-padel.com', 'www.1-padel.com'].includes(window.location.hostname) ? window.location.origin : 'https://1-padel.com';
++    const schedule = createScheduleClient({ baseUrl });
++    return createIndividualCancellation({ ...client, details: id => schedule.details(id, 'es') });
+   }, [client, profile?.id]);
+   const retryRestore = useCallback(async () => {
+     setRestoring(true); setRestoreError(null);
+@@ -62,6 +68,6 @@
+     cancelGoogle(); setRestoreError(null); setProfile(await client.login(email, password));
+   }
+   async function logout() { cancelGoogle(); await client.logout(); setProfile(null); }
+-  return <Context.Provider value={{ profile, restoring, restoreError, googleCode, login, google, cancelGoogle, logout, retryRestore, client, booking }}>{children}</Context.Provider>;
++  return <Context.Provider value={{ profile, restoring, restoreError, googleCode, login, google, cancelGoogle, logout, retryRestore, client, booking, cancellation }}>{children}</Context.Provider>;
+ }
+ export function useAuth() { const value = useContext(Context); if (!value) throw new Error('AuthProvider required'); return value; }
+diff --git a/mobile-app/src/MyEventsScreen.tsx b/mobile-app/src/MyEventsScreen.tsx
+--- a/mobile-app/src/MyEventsScreen.tsx
++++ b/mobile-app/src/MyEventsScreen.tsx
+@@ -8,6 +8,9 @@
+ import { authErrorText } from './LoginScreen';
+ import { messages } from './copy';
+ import { colors } from './theme';
++import IndividualCancellationScreen from './IndividualCancellationScreen';
++import { isIndividualEvent } from './individualBooking';
++import { cancellationCopy } from './cancellationCopy';
+ const copy: Record<Language, Record<string, string>> = {
+   "ru": {
+     "title": "Мои мероприятия",
+@@ -18,7 +21,7 @@
+     "refresh": "Обновить",
+     "loading": "Загружаем ваши записи…",
+     "empty": "Здесь пока нет мероприятий",
+-    "emptyHint": "Когда вы запишетесь на сайте, мероприятие появится здесь.",
++    "emptyHint": "Когда вы запишетесь, мероприятие появится здесь.",
+     "browse": "Найти игру",
+     "open": "Открыть на сайте",
+     "waitPosition": "Место в очереди",
+@@ -46,7 +49,7 @@
+     "refresh": "Actualizar",
+     "loading": "Cargando tus inscripciones…",
+     "empty": "Todavía no hay eventos acá",
+-    "emptyHint": "Cuando te inscribas en la web, el evento aparecerá acá.",
++    "emptyHint": "Cuando te inscribas, el evento aparecerá acá.",
+     "browse": "Buscar un juego",
+     "open": "Abrir en la web",
+     "waitPosition": "Posición en espera",
+@@ -74,7 +77,7 @@
+     "refresh": "Refresh",
+     "loading": "Loading your registrations…",
+     "empty": "No events here yet",
+-    "emptyHint": "When you register on the website, your event will appear here.",
++    "emptyHint": "When you register, your event will appear here.",
+     "browse": "Find a game",
+     "open": "Open on website",
+     "waitPosition": "Waiting list position",
+@@ -102,6 +105,7 @@
+   const [loading, setLoading] = useState(true);
+   const [history, setHistory] = useState(false);
+   const [revision, setRevision] = useState(0);
++  const [cancellationId, setCancellationId] = useState<number | null>(null);
+   const [logoutError, setLogoutError] = useState(false);
+   useEffect(() => {
+     let alive = true;
+@@ -114,6 +118,7 @@
+     return history === past;
+   }).sort((a, b) => (history ? -1 : 1) * (Date.parse(a.event.startsAt) - Date.parse(b.event.startsAt))), [data, history]);
+   async function logout() { try { await auth.logout(); } catch { setLogoutError(true); } }
++  if (cancellationId !== null) return <IndividualCancellationScreen key={`${cancellationId}:${auth.profile?.id}`} tournamentId={cancellationId} cancellation={auth.cancellation} profileName={auth.profile?.name ?? ''} language={language} onClose={() => { setCancellationId(null); setRevision(value => value + 1); }} />;
+   return <ScrollView contentContainerStyle={styles.content}>
+     <View style={styles.top}><View style={{ flex: 1 }}><Text accessibilityRole="header" style={styles.title}>{t.title}</Text><Text style={styles.subtitle}>{t.subtitle}</Text></View>
+       <TouchableOpacity accessibilityRole="button" onPress={() => void logout()} style={styles.smallButton}><Text style={styles.link}>{t.logout}</Text></TouchableOpacity></View>
+@@ -128,6 +133,7 @@
+       <Text style={styles.subtitle}>{item.event.club.name}</Text>
+       {item.waitlistPosition != null && item.active && <Text style={styles.subtitle}>{t.waitPosition}: {item.waitlistPosition}</Text>}
+       <View style={styles.bottom}><Text style={styles.price}>{eventPrice(item.event, language)}</Text><TouchableOpacity accessibilityRole="link" onPress={() => Linking.openURL(item.event.websiteUrl)} style={styles.open}><Text style={styles.link}>{t.open} ↗</Text></TouchableOpacity></View>
++      {!history && isIndividualEvent(item.event) && item.active && ['CONFIRMED', 'WAITLIST', 'WAITLIST_INVITED'].includes(item.status ?? '') && <TouchableOpacity accessibilityRole="button" accessibilityLabel={`${cancellationCopy[language].action}: ${messages[language][item.event.type]}`} onPress={() => setCancellationId(item.event.id)} style={styles.cancelButton}><Text style={styles.cancelText}>{cancellationCopy[language].action}</Text></TouchableOpacity>}
+     </View>)}
+   </ScrollView>;
+ }
+@@ -140,6 +146,7 @@
+   name: { color: colors.ink, fontSize: 16, fontWeight: '700' }, segment: { flexDirection: 'row', padding: 4, backgroundColor: colors.line, borderRadius: 12, marginTop: 22 },
+   segmentTab: { flex: 1, minHeight: 40, justifyContent: 'center', alignItems: 'center', borderRadius: 9 }, selected: { backgroundColor: colors.white }, refresh: { alignSelf: 'flex-end', minHeight: 44, justifyContent: 'center' },
+   empty: { alignItems: 'center', padding: 24, gap: 8 }, error: { color: '#A13F31', fontSize: 13, lineHeight: 20 },
++  cancelButton: { borderTopWidth: 1, borderColor: colors.line, minHeight: 48, justifyContent: 'center', marginTop: 8 }, cancelText: { color: '#A13F31', fontSize: 13, fontWeight: '700' },
+   card: { borderRadius: 18, padding: 18, borderColor: colors.line, borderWidth: 1, backgroundColor: colors.white, marginBottom: 12 }, status: { color: colors.green, fontSize: 11, fontWeight: '800', alignSelf: 'flex-start', backgroundColor: colors.greenPale, borderRadius: 7, paddingHorizontal: 8, paddingVertical: 5 }, wait: { backgroundColor: colors.pale, color: '#98512F' },
+   eventTitle: { color: colors.ink, fontSize: 21, lineHeight: 28, fontWeight: '800', marginTop: 12 }, date: { color: colors.ink, fontWeight: '600', fontSize: 14, marginTop: 8 },
+   bottom: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 10 }, price: { color: colors.ink, fontSize: 13, fontWeight: '700' }, open: { minHeight: 44, justifyContent: 'center', paddingVertical: 8 },
+diff --git a/mobile-app/src/individualCancellation.ts b/mobile-app/src/individualCancellation.ts
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/src/individualCancellation.ts
+@@ -0,0 +1,85 @@
++import { AuthError, PlayerRequestError } from './auth.ts';
++import type { Registration } from './auth.ts';
++import type { PublicTournament } from './schedule.ts';
++import { cancellationDeadline, isIndividualEvent } from './individualBooking.ts';
++
++export type CancellationSnapshot = { event: PublicTournament; registration: Registration | null };
++export type CancellationReceipt = { alreadyInactive: boolean };
++export type CancellationTransport = {
++  sessionVersion?: () => number;
++  details: (id: number) => Promise<PublicTournament>;
++  registrations: () => Promise<Registration[]>;
++  cancelIndividual: (id: number, reason: string) => Promise<unknown>;
++};
++export class CancellationError extends AuthError {
++  snapshot?: CancellationSnapshot;
++  constructor(code: string, snapshot?: CancellationSnapshot) { super(code); this.snapshot = snapshot; }
++}
++export function cancellationBlock(snapshot: CancellationSnapshot, now = Date.now()): string | null {
++  const { event, registration } = snapshot;
++  if (!isIndividualEvent(event)) return 'NOT_INDIVIDUAL';
++  if (!registration) return 'INACTIVE';
++  if (!['CONFIRMED', 'WAITLIST', 'WAITLIST_INVITED'].includes(registration.status ?? '')) return 'UNSUPPORTED';
++  if (!Number.isFinite(Date.parse(event.startsAt)) || !Number.isFinite(Date.parse(cancellationDeadline(event)))) return 'UNAVAILABLE';
++  if (['FINALIZADO', 'CANCELADO', 'CERRADO'].includes(event.status) || Date.parse(event.startsAt) <= now) return 'CLOSED';
++  // Сервер использует now.isBefore(effectiveDeadline), в том числе для WAITLIST и Cancha.
++  if (now >= Date.parse(cancellationDeadline(event))) return 'DEADLINE';
++  return null;
++}
++export function cancellationQuote({ event, registration }: CancellationSnapshot) {
++  // Место в очереди само по себе не меняет согласие; переход WAITLIST→CONFIRMED меняет.
++  return JSON.stringify([event.id, event.type, event.modality, event.name, event.gender, event.level,
++    event.startsAt, event.timeZone, event.club, event.status, event.price, event.currency, event.description,
++    cancellationDeadline(event), registration?.status, registration?.registeredAt ?? null]);
++}
++export function cancellationTerms(event: PublicTournament, status: string | null) {
++  return event.type === 'CANCHA_ABIERTA' ? 'cancha' : status === 'CONFIRMED' ? 'financial' : 'waitlist';
++}
++export function createIndividualCancellation(transport: CancellationTransport) {
++  const version = transport.sessionVersion?.();
++  const pending = new Set<number>(); const uncertain = new Set<number>();
++  function checkAccount() { if (version !== transport.sessionVersion?.()) throw new AuthError('CANCELLED'); }
++  async function load(id: number): Promise<CancellationSnapshot> {
++    checkAccount();
++    if (!Number.isSafeInteger(id) || id < 1) throw new CancellationError('UNAVAILABLE');
++    const [event, rows] = await Promise.all([transport.details(id), transport.registrations()]);
++    checkAccount();
++    if (event.id !== id) throw new CancellationError('UNAVAILABLE');
++    return { event, registration: rows.find(row => row.event.id === id && row.active && row.status !== null && !['CANCELLED', 'PARTICIPATED', 'SOLO_EXPIRED'].includes(row.status)) ?? null };
++  }
++  return {
++    load,
++    isUncertain: (id: number) => uncertain.has(id),
++    async reconcile(id: number) {
++      const snapshot = await load(id);
++      if (!snapshot.registration) uncertain.delete(id);
++      return { snapshot, receipt: snapshot.registration ? null : { alreadyInactive: true }, uncertain: uncertain.has(id) };
++    },
++    async cancel(id: number, quote: string, reason = ''): Promise<CancellationReceipt> {
++      if (pending.has(id)) throw new CancellationError('BUSY');
++      if (uncertain.has(id)) throw new CancellationError('UNCERTAIN');
++      if (reason.length > 500) throw new CancellationError('REASON');
++      pending.add(id);
++      try {
++        const snapshot = await load(id);
++        if (!isIndividualEvent(snapshot.event)) throw new CancellationError('NOT_INDIVIDUAL', snapshot);
++        if (!snapshot.registration) return { alreadyInactive: true };
++        const block = cancellationBlock(snapshot);
++        if (block) throw new CancellationError(block, snapshot);
++        if (cancellationQuote(snapshot) !== quote) throw new CancellationError('CHANGED', snapshot);
++        checkAccount();
++        try {
++          const reply = await transport.cancelIndividual(id, reason.trim());
++          checkAccount();
++          if (!reply || typeof reply !== 'object' || Array.isArray(reply) || (reply as { success?: unknown }).success !== true) throw new Error('Invalid cancellation receipt');
++          return { alreadyInactive: false };
++        } catch (error) {
++          checkAccount();
++          // Достоверный отказ не выдаём за отмену. Любой неопределённый ответ — только сверка GET.
++          if (error instanceof PlayerRequestError || error instanceof AuthError && ['FORBIDDEN', 'RATE_LIMIT'].includes(error.code)) throw error;
++          uncertain.add(id); throw new CancellationError('UNCERTAIN');
++        }
++      } finally { pending.delete(id); }
++    },
++  };
++}
+diff --git a/mobile-app/src/IndividualCancellationScreen.tsx b/mobile-app/src/IndividualCancellationScreen.tsx
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/src/IndividualCancellationScreen.tsx
+@@ -0,0 +1,93 @@
++import React, { useEffect, useRef, useState } from 'react';
++import { ActivityIndicator, KeyboardAvoidingView, Linking, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
++import { AuthError, PlayerRequestError } from './auth';
++import { cancellationDeadline } from './individualBooking';
++import { CancellationError, cancellationBlock, cancellationQuote, cancellationTerms } from './individualCancellation';
++import type { CancellationSnapshot, CancellationReceipt, createIndividualCancellation } from './individualCancellation';
++import { eventDate, eventPrice } from './schedule';
++import type { Language } from './schedule';
++import { messages } from './copy';
++import { cancellationCopy } from './cancellationCopy';
++import { colors as c } from './theme';
++
++export default function IndividualCancellationScreen({ tournamentId, cancellation, profileName, language, onClose, demo = false }: {
++  tournamentId: number; cancellation: ReturnType<typeof createIndividualCancellation>; profileName: string;
++  language: Language; onClose: () => void; demo?: boolean;
++}) {
++  const t = cancellationCopy[language];
++  const [snapshot, setSnapshot] = useState<CancellationSnapshot | null>(null);
++  const [receipt, setReceipt] = useState<CancellationReceipt | null>(null);
++  const [error, setError] = useState<AuthError | null>(null);
++  const [loading, setLoading] = useState(true); const [busy, setBusy] = useState(false);
++  const [accepted, setAccepted] = useState(false); const [reason, setReason] = useState('');
++  const [uncertain, setUncertain] = useState(false); const [checkedUncertain, setCheckedUncertain] = useState(false);
++  const [now, setNow] = useState(Date.now());
++  const version = useRef(0); const running = useRef(false);
++  function problem(value: unknown) {
++    const issue = value instanceof AuthError ? value : new AuthError('UNAVAILABLE');
++    if (issue instanceof CancellationError && issue.snapshot) setSnapshot(issue.snapshot);
++    setAccepted(false); setError(issue);
++    if (issue.code === 'UNCERTAIN') { setUncertain(true); setCheckedUncertain(false); }
++  }
++  async function perform(action: () => Promise<void>) {
++    if (running.current) return;
++    running.current = true; const started = version.current; setBusy(true); setError(null);
++    try { await action(); } catch (value) { if (started === version.current) problem(value); }
++    finally { running.current = false; if (started === version.current) { setBusy(false); setLoading(false); setNow(Date.now()); } }
++  }
++  async function check() {
++    const started = version.current; setAccepted(false);
++    await perform(async () => {
++      const next = await cancellation.reconcile(tournamentId);
++      if (started !== version.current) return;
++      setSnapshot(next.snapshot); setReceipt(next.receipt); setUncertain(next.uncertain); setCheckedUncertain(next.uncertain);
++    });
++  }
++  useEffect(() => { version.current++; void check(); const timer = setInterval(() => setNow(Date.now()), 15000); return () => { version.current++; clearInterval(timer); }; }, [cancellation, tournamentId]);
++  const event = snapshot?.event;
++  const block = snapshot ? cancellationBlock(snapshot, now) : 'UNAVAILABLE';
++  const terms = event ? cancellationTerms(event, snapshot?.registration?.status ?? null) : null;
++  const canSubmit = !!snapshot && !block && !receipt && !uncertain && !loading && !busy && (!error || error.code === 'CHANGED');
++  const blockedText = block === 'DEADLINE' ? t.expired : block === 'CLOSED' ? t.closed : block === 'NOT_INDIVIDUAL' || block === 'UNSUPPORTED' ? t.unsupported : t.unavailable;
++  const errorText = error instanceof PlayerRequestError ? (/after deadline/i.test(error.detail) ? t.expired : error.detail || t.rejected) : error?.code === 'CHANGED' ? t.changed : error?.code === 'FORBIDDEN' ? t.forbidden : t.unavailable;
++  async function external() { try { await Linking.openURL(event?.websiteUrl ?? `https://1-padel.com/torneo/${tournamentId}`); } catch { setError(new AuthError('UNAVAILABLE')); } }
++  return <KeyboardAvoidingView style={s.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
++    <View style={s.top}><TouchableOpacity accessibilityRole="button" accessibilityState={{ disabled: busy }} disabled={busy} onPress={onClose} style={s.back}><Text style={s.link}>‹ {t.back}</Text></TouchableOpacity><Text accessibilityRole="header" style={s.title}>{t.title}</Text></View>
++    {demo && <Text style={s.demo}>{t.demo}</Text>}
++    <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={s.content}>
++      {loading && <View style={s.state}><ActivityIndicator color={c.orange} /><Text style={s.body}>{t.loading}</Text></View>}
++      {receipt && <View style={s.success}><Text accessibilityRole="header" style={s.result}>{receipt.alreadyInactive ? t.inactive : t.done}</Text><Text style={s.body}>{receipt.alreadyInactive ? t.inactiveBody : t.doneBody}</Text></View>}
++      {event && <View style={s.card}><Text style={s.eventTitle}>{messages[language][event.type]}</Text><Text style={s.body}>{messages[language][event.gender]}{event.level ? ` · ${event.level.replaceAll('_', '/')}` : ''}</Text><Text style={s.fact}>{eventDate(event.startsAt, event.timeZone, language)}</Text><Text style={s.body}>{event.club.name}</Text><Text style={s.label}>{t.person}</Text><Text style={s.fact}>{profileName}</Text><View style={s.priceRow}><Text style={s.body}>{t.price}</Text><Text style={s.price}>{eventPrice(event, language)}</Text></View></View>}
++      {!loading && event && !receipt && <>
++        {!!block && block !== 'INACTIVE' && <View style={s.notice}><Text accessibilityRole="alert" style={s.warning}>{blockedText}</Text></View>}
++        <View style={s.card}><Text style={s.section}>{t.rules}</Text><Text style={s.label}>{t.deadline}</Text><Text style={s.fact}>{eventDate(cancellationDeadline(event), event.timeZone, language)}</Text>
++          {terms === 'financial' && <><Text style={s.body}>{t.financial}</Text>{Date.parse(event.startsAt) - now < 86400000 && <Text style={s.warning}>{t.late}</Text>}<Text style={s.body}>{t.refund}</Text></>}
++          {terms === 'cancha' && <Text style={s.body}>{t.cancha}</Text>}
++          {terms === 'waitlist' && <Text style={s.body}>{t.waitlist}</Text>}
++          {snapshot?.registration?.status === 'CONFIRMED' && <Text style={s.body}>{t.effect}</Text>}
++          <TouchableOpacity accessibilityRole="link" onPress={() => void external()} style={s.textButton}><Text style={s.link}>{t.site} ↗</Text></TouchableOpacity>
++        </View>
++        {uncertain && <View style={s.notice}><Text accessibilityRole="header" style={s.result}>{t.uncertain}</Text><Text style={s.body}>{t.uncertainBody}</Text>{checkedUncertain && <Text style={s.body}>{t.stillActive}</Text>}</View>}
++        {!block && !uncertain && <View style={s.card}><Text style={s.label}>{t.reason}</Text><TextInput accessibilityLabel={t.reason} value={reason} onChangeText={setReason} multiline maxLength={500} editable={!busy} placeholder={t.reasonHint} style={s.input} /><TouchableOpacity accessibilityRole="checkbox" accessibilityState={{ checked: accepted, disabled: !canSubmit }} disabled={!canSubmit} onPress={() => setAccepted(value => !value)} style={s.checkRow}><View style={[s.checkbox, accepted && s.checked]}><Text style={s.check}>{accepted ? '✓' : ''}</Text></View><Text style={s.consent}>{t.consent}</Text></TouchableOpacity></View>}
++      </>}
++      {error && !uncertain && !(error instanceof CancellationError && error.snapshot && error.code !== 'CHANGED') && <Text accessibilityRole="alert" style={s.warning}>{errorText}</Text>}
++      {!loading && !event && <Button title={t.site} secondary onPress={() => void external()} />}
++      {!loading && !receipt && <Button title={t.retry} disabled={busy} secondary onPress={() => void check()} />}
++    </ScrollView>
++    <View style={s.footer}>{receipt ? <Button title={t.myEvents} onPress={onClose} /> : <Button title={busy ? t.sending : t.confirm} disabled={!canSubmit || !accepted} onPress={() => {
++      if (!snapshot || !accepted) return;
++      const started = version.current;
++      void perform(async () => { const result = await cancellation.cancel(tournamentId, cancellationQuote(snapshot), reason); if (started === version.current) { setReceipt(result); setAccepted(false); } });
++    }} />}</View>
++  </KeyboardAvoidingView>;
++}
++function Button({ title, onPress, disabled = false, secondary = false }: { title: string; onPress: () => void; disabled?: boolean; secondary?: boolean }) {
++  return <TouchableOpacity accessibilityRole="button" accessibilityState={{ disabled }} disabled={disabled} onPress={onPress} style={[s.button, secondary && s.secondary, disabled && s.disabled]}><Text style={[s.buttonText, secondary && s.link]}>{title}</Text></TouchableOpacity>;
++}
++const s = StyleSheet.create({
++  screen: { flex: 1, backgroundColor: c.background }, top: { paddingHorizontal: 20, paddingBottom: 14, backgroundColor: c.white, borderBottomWidth: 1, borderColor: c.line }, back: { minHeight: 44, justifyContent: 'center', alignSelf: 'flex-start' }, link: { color: c.green, fontSize: 12, fontWeight: '700', lineHeight: 19 }, title: { color: c.ink, fontSize: 24, fontWeight: '800', letterSpacing: -0.6 },
++  content: { width: '100%', maxWidth: 520, alignSelf: 'center', padding: 20, gap: 14, paddingBottom: 26 }, card: { backgroundColor: c.white, padding: 18, borderRadius: 18, borderWidth: 1, borderColor: c.line }, eventTitle: { fontSize: 25, fontWeight: '800', letterSpacing: -0.6, color: c.ink, lineHeight: 31 }, section: { fontSize: 17, lineHeight: 24, fontWeight: '800', color: c.ink }, label: { color: c.muted, fontSize: 11, lineHeight: 17, marginTop: 12 }, body: { fontSize: 13, lineHeight: 21, color: c.muted, marginTop: 7 }, fact: { color: c.ink, fontSize: 14, lineHeight: 22, fontWeight: '700', marginTop: 7 }, priceRow: { borderTopWidth: 1, borderColor: c.line, marginTop: 16, paddingTop: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }, price: { color: c.ink, fontSize: 19, fontWeight: '800' },
++  input: { borderWidth: 1, borderColor: c.line, borderRadius: 11, padding: 12, minHeight: 85, color: c.ink, fontSize: 16, marginTop: 8, textAlignVertical: 'top' }, notice: { backgroundColor: c.amberPale, borderRadius: 15, padding: 18 }, success: { backgroundColor: c.greenPale, borderRadius: 15, padding: 18 }, result: { color: c.ink, fontSize: 22, fontWeight: '800', lineHeight: 29 }, warning: { color: '#A13F31', fontSize: 13, lineHeight: 21, marginTop: 7 }, state: { padding: 25, alignItems: 'center', gap: 10 }, demo: { padding: 9, textAlign: 'center', fontSize: 11, color: c.amber, backgroundColor: c.amberPale },
++  checkRow: { flexDirection: 'row', gap: 10, minHeight: 48, paddingTop: 16 }, checkbox: { width: 22, height: 22, borderWidth: 1, borderColor: c.muted, borderRadius: 6, alignItems: 'center', justifyContent: 'center' }, checked: { backgroundColor: c.green, borderColor: c.green }, check: { color: c.white, fontSize: 15, fontWeight: '800' }, consent: { flex: 1, color: c.ink, fontSize: 13, lineHeight: 21 },
++  footer: { backgroundColor: c.white, borderTopWidth: 1, borderColor: c.line, paddingHorizontal: 20, paddingVertical: 12, alignItems: 'center' }, button: { width: '100%', maxWidth: 480, alignSelf: 'center', backgroundColor: '#A13F31', minHeight: 50, borderRadius: 13, padding: 12, alignItems: 'center', justifyContent: 'center' }, buttonText: { color: c.white, fontSize: 14, lineHeight: 21, fontWeight: '800', textAlign: 'center' }, secondary: { backgroundColor: c.white, borderWidth: 1, borderColor: c.line }, disabled: { opacity: 0.4 }, textButton: { minHeight: 44, justifyContent: 'center', marginTop: 9 },
++});
+diff --git a/mobile-app/src/IndividualCancellationLab.tsx b/mobile-app/src/IndividualCancellationLab.tsx
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/src/IndividualCancellationLab.tsx
+@@ -0,0 +1,41 @@
++import React, { useMemo, useState } from 'react';
++import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
++import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
++import IndividualCancellationScreen from './IndividualCancellationScreen';
++import { AuthError, PlayerRequestError } from './auth';
++import type { Registration } from './auth';
++import type { PublicTournament } from './schedule';
++import { createIndividualCancellation } from './individualCancellation';
++import { colors as c } from './theme';
++
++const scenarios = ['Тренировка + игра', 'Cancha Abierta', 'Король корта', 'Americano', 'Лист ожидания', 'Срок прошёл', 'Поздняя отмена', 'Место подтвердилось', 'Уже отменено', 'Обрыв после отмены', 'Обрыв без ответа', 'Отказ сайта'] as const;
++type Scenario = typeof scenarios[number];
++function laboratory(scenario: Scenario, onWrite: () => void) {
++  const event: PublicTournament = { id: 90001, name: 'Тестовое мероприятие', type: scenario === 'Cancha Abierta' ? 'CANCHA_ABIERTA' : scenario === 'Король корта' ? 'KING_OF_COURT' : scenario === 'Americano' ? 'AMERICANO' : 'PADEL_CLINIC', modality: 'INDIVIDUAL', gender: 'MASCULINO', level: 'C8', club: { id: 1, name: 'Тестовый клуб', address: null }, startsAt: new Date(Date.now() + (scenario === 'Поздняя отмена' ? 12 : 72) * 3600000).toISOString(), timeZone: 'America/Argentina/Buenos_Aires', duration: '3 h', price: 43000, currency: 'ARS', status: 'REGISTRO_ABIERTO', capacity: 12, occupied: 8, available: 4, capacityUnit: 'PLAYERS', registrationOpen: true, waitlistCount: 2, cancellationDeadline: new Date(Date.now() + (scenario === 'Срок прошёл' ? -1 : scenario === 'Поздняя отмена' ? 6 : 48) * 3600000).toISOString(), description: null, websiteUrl: 'https://1-padel.com/' };
++  let reads = 0;
++  let rows: Registration[] = scenario === 'Уже отменено' ? [] : [{ registrationId: event.id, status: ['Лист ожидания', 'Место подтвердилось'].includes(scenario) ? 'WAITLIST' : 'CONFIRMED', active: true, waitlistPosition: 3, registeredAt: '2026-10-20T08:00:00', event }];
++  const cancellation = createIndividualCancellation({
++    details: async () => ({ ...event }),
++    registrations: async () => { if (scenario === 'Место подтвердилось' && ++reads >= 2) rows = rows.map(row => ({ ...row, status: 'CONFIRMED', waitlistPosition: null })); return [...rows]; },
++    cancelIndividual: async () => {
++      onWrite();
++      if (scenario === 'Отказ сайта') throw new PlayerRequestError({ success: false, message: 'Cannot cancel registration after deadline' });
++      if (scenario !== 'Обрыв без ответа') rows = [];
++      if (scenario.startsWith('Обрыв')) throw new AuthError('NETWORK');
++      return { success: true };
++    },
++  });
++  return { cancellation, rows: () => [...rows] };
++}
++export default function IndividualCancellationLab() {
++  const [scenario, setScenario] = useState<Scenario>('Тренировка + игра');
++  const [writes, setWrites] = useState(0); const [screen, setScreen] = useState<'cancel' | 'events'>('cancel');
++  const lab = useMemo(() => laboratory(scenario, () => setWrites(value => value + 1)), [scenario]);
++  return <SafeAreaProvider><SafeAreaView style={s.root}>
++    <View style={s.header}><Text style={s.brand}>1-PADEL<Text style={{ color: c.orange }}>.</Text></Text><Text style={s.label}>Проверка отмены записи</Text></View>
++    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.tabs} contentContainerStyle={s.tabContent}>{scenarios.map(value => <TouchableOpacity key={value} accessibilityRole="tab" accessibilityState={{ selected: value === scenario }} onPress={() => { setWrites(0); setScreen('cancel'); setScenario(value); }} style={[s.tab, value === scenario && s.active]}><Text style={[s.tabText, value === scenario && { color: c.white }]}>{value}</Text></TouchableOpacity>)}</ScrollView>
++    <Text style={s.counter}>Тестовых отмен: {writes}</Text>
++    {screen === 'cancel' ? <IndividualCancellationScreen key={scenario} tournamentId={90001} cancellation={lab.cancellation} language="ru" profileName="Игрок · тестовый аккаунт" demo onClose={() => setScreen('events')} /> : <View style={s.page}><Text style={s.title}>Мои мероприятия · тест</Text><Text style={s.label}>{lab.rows().length ? 'Активная запись существует' : 'Активных записей нет'}</Text><TouchableOpacity accessibilityRole="button" onPress={() => setScreen('cancel')} style={s.button}><Text style={s.buttonText}>Открыть экран отмены</Text></TouchableOpacity><Text style={s.label}>Вымышленные данные. На сайт ничего не отправляется.</Text></View>}
++  </SafeAreaView></SafeAreaProvider>;
++}
++const s = StyleSheet.create({ root: { flex: 1, backgroundColor: c.white }, header: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 10 }, brand: { fontWeight: '900', fontSize: 22, color: c.ink, letterSpacing: -1 }, label: { fontSize: 11, color: c.muted, lineHeight: 19 }, tabs: { flexGrow: 0, maxHeight: 56 }, tabContent: { paddingHorizontal: 16, paddingVertical: 8, gap: 7 }, tab: { paddingHorizontal: 12, borderRadius: 19, borderWidth: 1, borderColor: c.line, minHeight: 35, justifyContent: 'center' }, active: { backgroundColor: c.ink }, tabText: { fontSize: 11, color: c.ink, fontWeight: '600' }, counter: { fontSize: 10, color: c.muted, paddingHorizontal: 20, paddingBottom: 8 }, page: { flex: 1, backgroundColor: c.background, padding: 20 }, title: { fontSize: 20, fontWeight: '800', color: c.ink, marginBottom: 12 }, button: { backgroundColor: c.orange, padding: 15, borderRadius: 12, alignItems: 'center', marginVertical: 15 }, buttonText: { fontSize: 14, fontWeight: '700', color: c.white } });
+diff --git a/mobile-app/src/cancellationCopy.ts b/mobile-app/src/cancellationCopy.ts
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/src/cancellationCopy.ts
+@@ -0,0 +1,68 @@
++export const cancellationCopy = {
++  ru: {
++    title: 'Отмена записи', action: 'Отменить запись', back: 'Назад', loading: 'Проверяем вашу запись и условия…',
++    deadline: 'Самостоятельная отмена доступна до', rules: 'Условия отмены', person: 'Участник', price: 'Стоимость участия',
++    financial: 'По условиям сайта, при отмене менее чем за 24 часа до начала участие оплачивается полностью. Если другой игрок займёт ваше место и полностью оплатит участие, оплата с вас не взимается или возвращается.',
++    late: 'До начала меньше 24 часов. Учитывайте финансовые условия сайта перед отменой.',
++    refund: 'Отмена записи сама по себе не выполняет возврат денег. Вопросы оплаты решаются с организатором.',
++    cancha: 'Если не сможете прийти, заранее сообщите организатору, чтобы освободить место другому игроку.',
++    waitlist: 'Вы в листе ожидания. При подтверждении будет снята ваша заявка из очереди. Перед отправкой проверим, не подтвердилось ли место.',
++    effect: 'После отмены вы потеряете место. Освободившееся место может сразу перейти следующему игроку из листа ожидания.',
++    reason: 'Причина отмены · необязательно', reasonHint: 'До 500 символов', consent: 'Понимаю условия и хочу отменить свою запись',
++    confirm: 'Подтвердить отмену', sending: 'Отменяем запись…', retry: 'Проверить состояние', site: 'Открыть мероприятие на сайте',
++    done: 'Запись отменена', doneBody: 'Сайт подтвердил отмену. Активная запись исчезнет из «Моих мероприятий».',
++    inactive: 'Активной записи уже нет', inactiveBody: 'Повторная отмена не отправлялась. Обновим ваши мероприятия.', myEvents: 'Вернуться в мои мероприятия',
++    expired: 'Срок самостоятельной отмены прошёл. Если не сможете прийти, свяжитесь с организатором через сайт.',
++    closed: 'Самостоятельная отмена для этого мероприятия недоступна. Откройте его на сайте и свяжитесь с организатором.',
++    unsupported: 'Для этой записи нужен другой сценарий отмены. Продолжите на сайте.',
++    changed: 'Мероприятие, условия или статус вашей записи изменились. Проверьте данные и подтвердите заново.',
++    uncertain: 'Проверим, отменилась ли запись', uncertainBody: 'Ответ сайта не получен. Отмена могла выполниться. Повторно запрос не отправится — можно только проверить состояние.',
++    stillActive: 'Сайт пока показывает активную запись. Первый запрос ещё может обрабатываться. Проверьте позже или откройте мероприятие на сайте.',
++    unavailable: 'Не удалось проверить запись. Попробуйте ещё раз.', rejected: 'Сайт не разрешил отмену.', forbidden: 'Сайт не разрешил действие для этого аккаунта.',
++    demo: 'Тестовый режим · настоящие записи не отменяются',
++  },
++  es: {
++    title: 'Cancelar inscripción', action: 'Cancelar inscripción', back: 'Volver', loading: 'Revisando tu inscripción y las condiciones…',
++    deadline: 'Podés cancelar por tu cuenta hasta', rules: 'Condiciones de cancelación', person: 'Participante', price: 'Precio de inscripción',
++    financial: 'Según las condiciones de la web, si cancelás con menos de 24 horas de anticipación, debés abonar la inscripción completa. Si otro jugador ocupa y paga tu lugar en su totalidad, no se cobra o se reintegra el importe.',
++    late: 'Faltan menos de 24 horas. Tené en cuenta las condiciones de pago antes de cancelar.',
++    refund: 'Cancelar la inscripción no realiza un reintegro automático. Coordiná cualquier pago con el organizador.',
++    cancha: 'Si no podés venir, avisale al organizador con anticipación para que otro jugador pueda ocupar tu lugar.',
++    waitlist: 'Estás en lista de espera. Al confirmar, se retirará tu solicitud. Antes de enviarla comprobaremos si tu lugar fue confirmado.',
++    effect: 'Al cancelar perderás tu lugar. Puede pasar inmediatamente al siguiente jugador en lista de espera.',
++    reason: 'Motivo · opcional', reasonHint: 'Hasta 500 caracteres', consent: 'Entiendo las condiciones y quiero cancelar mi inscripción',
++    confirm: 'Confirmar cancelación', sending: 'Cancelando inscripción…', retry: 'Comprobar estado', site: 'Abrir evento en la web',
++    done: 'Inscripción cancelada', doneBody: 'La web confirmó la cancelación. La inscripción activa dejará de aparecer en «Mis eventos».',
++    inactive: 'Ya no hay una inscripción activa', inactiveBody: 'No se volvió a enviar la cancelación. Actualizaremos tus eventos.', myEvents: 'Volver a mis eventos',
++    expired: 'Venció el plazo para cancelar por tu cuenta. Si no podés ir, contactá al organizador desde la web.',
++    closed: 'No se puede cancelar este evento desde la aplicación. Abrilo en la web y contactá al organizador.',
++    unsupported: 'Esta inscripción requiere otro tipo de cancelación. Continuá en la web.',
++    changed: 'Cambió el evento, las condiciones o el estado de tu inscripción. Revisá los datos y confirmá de nuevo.',
++    uncertain: 'Comprobemos si se canceló', uncertainBody: 'No recibimos la respuesta. La cancelación pudo realizarse. No se enviará otra solicitud: solo se comprobará el estado.',
++    stillActive: 'La web todavía muestra tu inscripción activa. La primera solicitud podría seguir procesándose. Comprobá más tarde o abrí el evento en la web.',
++    unavailable: 'No pudimos comprobar tu inscripción. Intentá de nuevo.', rejected: 'La web no permitió la cancelación.', forbidden: 'La web no permitió esta acción para tu cuenta.',
++    demo: 'Modo de prueba · no se cancelan inscripciones reales',
++  },
++  en: {
++    title: 'Cancel registration', action: 'Cancel registration', back: 'Back', loading: 'Checking your registration and the terms…',
++    deadline: 'Self-service cancellation available until', rules: 'Cancellation terms', person: 'Participant', price: 'Registration fee',
++    financial: 'Under the website terms, cancellation less than 24 hours before the start requires full payment. If another player takes your place and pays in full, you will not be charged or will receive a refund.',
++    late: 'The event starts in less than 24 hours. Review the payment terms before cancelling.',
++    refund: 'Cancelling a registration does not issue an automatic refund. Arrange payment matters with the organiser.',
++    cancha: 'If you cannot attend, tell the organiser in advance so another player can take your place.',
++    waitlist: 'You are on the waitlist. Confirming will withdraw your request. We will check whether your place has been confirmed before sending it.',
++    effect: 'You will lose your place after cancelling. It may immediately go to the next player on the waitlist.',
++    reason: 'Reason · optional', reasonHint: 'Up to 500 characters', consent: 'I understand the terms and want to cancel my registration',
++    confirm: 'Confirm cancellation', sending: 'Cancelling registration…', retry: 'Check status', site: 'Open event on website',
++    done: 'Registration cancelled', doneBody: 'The website confirmed cancellation. The active registration will disappear from My events.',
++    inactive: 'No active registration remains', inactiveBody: 'No further cancellation request was sent. We will refresh your events.', myEvents: 'Back to my events',
++    expired: 'The self-service cancellation deadline has passed. If you cannot attend, contact the organiser through the website.',
++    closed: 'Self-service cancellation is unavailable for this event. Open it on the website and contact the organiser.',
++    unsupported: 'This registration requires a different cancellation flow. Continue on the website.',
++    changed: 'The event, terms or registration status changed. Review the information and confirm again.',
++    uncertain: 'Check whether cancellation completed', uncertainBody: 'The website response did not arrive. Cancellation may have completed. The request will not be repeated; you can only check its status.',
++    stillActive: 'The website still shows an active registration. The first request may still be processing. Check later or open the event on the website.',
++    unavailable: 'Could not check your registration. Please try again.', rejected: 'The website did not allow cancellation.', forbidden: 'The website did not allow this action for your account.',
++    demo: 'Test mode · no real registrations are cancelled',
++  },
++};
+diff --git a/mobile-app/tests/individualCancellation.test.mjs b/mobile-app/tests/individualCancellation.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/tests/individualCancellation.test.mjs
+@@ -0,0 +1,107 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++import { AuthError, PlayerRequestError } from '../src/auth.ts';
++import { createIndividualCancellation, cancellationBlock, cancellationQuote, cancellationTerms } from '../src/individualCancellation.ts';
++import { cancellationCopy } from '../src/cancellationCopy.ts';
++function fixture() {
++  const event = { id: 42, name: 'Training', type: 'PADEL_CLINIC', modality: 'INDIVIDUAL', gender: 'MASCULINO', level: 'C8', status: 'REGISTRO_ABIERTO', startsAt: new Date(Date.now() + 4 * 86400000).toISOString(), timeZone: 'America/Argentina/Buenos_Aires', club: { id: 1, name: 'Test' }, price: 43000, currency: 'ARS', cancellationDeadline: null, description: null };
++  const row = { event, active: true, status: 'CONFIRMED', registeredAt: '2026-10-20T09:00:00', waitlistPosition: null };
++  const state = { event, rows: [row], writes: 0, reason: null, version: 1, reply: { success: true } };
++  const transport = { sessionVersion: () => state.version, details: async () => ({ ...state.event }), registrations: async () => [...state.rows], cancelIndividual: async (id, reason) => { state.writes++; state.reason = reason; state.rows = []; return state.reply; } };
++  return { state, transport, client: createIndividualCancellation(transport), snapshot: () => ({ event: state.event, registration: state.rows[0] ?? null }) };
++}
++test('review is read-only; all four individual formats cancel once with an explicit quote', async () => {
++  for (const type of ['PADEL_CLINIC', 'CANCHA_ABIERTA', 'KING_OF_COURT', 'AMERICANO']) {
++    const f = fixture(); f.state.event.type = type;
++    const view = await f.client.reconcile(42); assert.equal(f.state.writes, 0); assert.equal(view.receipt, null);
++    assert.deepEqual(await f.client.cancel(42, cancellationQuote(view.snapshot), '  Cannot attend  '), { alreadyInactive: false });
++    assert.equal(f.state.writes, 1); assert.equal(f.state.reason, 'Cannot attend');
++  }
++});
++test('server deadline overrides default; boundary is strict for confirmed and waitlist including Cancha', async () => {
++  for (const type of ['CANCHA_ABIERTA', 'PADEL_CLINIC']) for (const status of ['CONFIRMED', 'WAITLIST', 'WAITLIST_INVITED']) {
++    const f = fixture(); f.state.event.type = type; f.state.rows[0].status = status;
++    const cutoff = Date.now() + 100000; f.state.event.cancellationDeadline = new Date(cutoff).toISOString();
++    assert.equal(cancellationBlock(f.snapshot(), cutoff - 1), null); assert.equal(cancellationBlock(f.snapshot(), cutoff), 'DEADLINE');
++    f.state.event.cancellationDeadline = new Date(Date.now() - 1000).toISOString();
++    await assert.rejects(f.client.cancel(42, cancellationQuote(f.snapshot())), { code: 'DEADLINE' }); assert.equal(f.state.writes, 0);
++  }
++  const f = fixture(); const start = Date.parse(f.state.event.startsAt);
++  assert.equal(cancellationBlock(f.snapshot(), start - 86400000 - 1), null);
++  assert.equal(cancellationBlock(f.snapshot(), start - 86400000), 'DEADLINE');
++});
++test('changed status from waitlist to confirmed requires fresh consent, with no cancellation', async () => {
++  const f = fixture(); f.state.rows[0].status = 'WAITLIST'; const quote = cancellationQuote(f.snapshot());
++  f.state.rows = [{ ...f.state.rows[0], status: 'CONFIRMED' }];
++  await assert.rejects(f.client.cancel(42, quote), error => error.code === 'CHANGED' && error.snapshot.registration.status === 'CONFIRMED'); assert.equal(f.state.writes, 0);
++});
++test('price, description, deadline, date and replaced registration invalidate reviewed quote', async () => {
++  for (const change of [{ price: 45000 }, { description: 'New conditions' }, { cancellationDeadline: new Date(Date.now() + 86400000).toISOString() }, { startsAt: new Date(Date.now() + 7 * 86400000).toISOString() }]) {
++    const f = fixture(); const quote = cancellationQuote(f.snapshot()); Object.assign(f.state.event, change);
++    await assert.rejects(f.client.cancel(42, quote), { code: 'CHANGED' }); assert.equal(f.state.writes, 0);
++  }
++  const f = fixture(); const quote = cancellationQuote(f.snapshot()); f.state.rows[0].registeredAt = '2026-10-20T10:00:00';
++  await assert.rejects(f.client.cancel(42, quote), { code: 'CHANGED' }); assert.equal(f.state.writes, 0);
++});
++test('missing or inactive own row does not send another cancellation or invent a successful mutation', async () => {
++  const f = fixture(); const quote = cancellationQuote(f.snapshot()); f.state.rows = [];
++  assert.deepEqual(await f.client.cancel(42, quote), { alreadyInactive: true }); assert.equal(f.state.writes, 0);
++});
++test('history, started and paired events and unsupported statuses cannot use individual cancellation', async () => {
++  for (const change of [{ modality: 'DOBLES' }, { startsAt: new Date(Date.now() - 1000).toISOString() }, { status: 'FINALIZADO' }, { status: 'CANCELADO' }]) {
++    const f = fixture(); Object.assign(f.state.event, change);
++    await assert.rejects(f.client.cancel(42, cancellationQuote(f.snapshot()))); assert.equal(f.state.writes, 0);
++  }
++  const f = fixture(); f.state.rows[0].status = 'SOLO_SEARCH';
++  await assert.rejects(f.client.cancel(42, cancellationQuote(f.snapshot())), { code: 'UNSUPPORTED' }); assert.equal(f.state.writes, 0);
++});
++test('cancellation does not require event registration to be open', async () => {
++  const f = fixture(); f.state.event.status = 'REGISTRO_CERRADO';
++  assert.deepEqual(await f.client.cancel(42, cancellationQuote(f.snapshot())), { alreadyInactive: false });
++});
++test('failure reading own registrations blocks cancellation; never treat it as an empty list', async () => {
++  const f = fixture(); f.transport.registrations = async () => { throw new AuthError('NETWORK'); };
++  const client = createIndividualCancellation(f.transport);
++  await assert.rejects(client.cancel(42, cancellationQuote(f.snapshot())), { code: 'NETWORK' }); assert.equal(f.state.writes, 0);
++});
++test('double taps only send one POST', async () => {
++  const f = fixture(); let reply;
++  f.transport.cancelIndividual = () => { f.state.writes++; return new Promise(resolve => { reply = resolve; }); };
++  const client = createIndividualCancellation(f.transport); const first = client.cancel(42, cancellationQuote(f.snapshot()));
++  await assert.rejects(client.cancel(42, cancellationQuote(f.snapshot())), { code: 'BUSY' });
++  await new Promise(resolve => setImmediate(resolve)); reply({ success: true }); await first; assert.equal(f.state.writes, 1);
++});
++test('account switch during preflight prevents cancelling as another player', async () => {
++  const f = fixture(); let reply; f.transport.details = () => new Promise(resolve => { reply = resolve; });
++  const client = createIndividualCancellation(f.transport); const first = client.cancel(42, cancellationQuote(f.snapshot()));
++  f.state.version++; reply(f.state.event); await assert.rejects(first, { code: 'CANCELLED' }); assert.equal(f.state.writes, 0);
++});
++test('lost response after commit reconciles absence; no replay or false confirmed receipt', async () => {
++  const f = fixture(); f.transport.cancelIndividual = async () => { f.state.writes++; f.state.rows = []; throw new AuthError('NETWORK'); };
++  const client = createIndividualCancellation(f.transport);
++  await assert.rejects(client.cancel(42, cancellationQuote(f.snapshot())), { code: 'UNCERTAIN' });
++  assert.equal(client.isUncertain(42), true); const checked = await client.reconcile(42);
++  assert.deepEqual(checked.receipt, { alreadyInactive: true }); assert.equal(checked.uncertain, false); assert.equal(f.state.writes, 1);
++});
++test('still active after lost response, 5xx, malformed reply or renewed session never enables resend', async () => {
++  for (const reply of [new AuthError('NETWORK'), new AuthError('UNAVAILABLE'), new AuthError('REVIEW_REQUIRED'), { success: 'true' }, {}]) {
++    const f = fixture(); f.transport.cancelIndividual = async () => { f.state.writes++; if (reply instanceof Error) throw reply; return reply; };
++    const client = createIndividualCancellation(f.transport); const quote = cancellationQuote(f.snapshot());
++    await assert.rejects(client.cancel(42, quote), { code: 'UNCERTAIN' }); const checked = await client.reconcile(42);
++    assert.equal(checked.uncertain, true); assert.equal(checked.receipt, null);
++    await assert.rejects(client.cancel(42, quote), { code: 'UNCERTAIN' }); assert.equal(f.state.writes, 1);
++  }
++});
++test('business rejection is displayed and not mistaken for a cancellation', async () => {
++  const f = fixture(); f.transport.cancelIndividual = async () => { throw new PlayerRequestError({ success: false, message: 'Cannot cancel registration after deadline' }); };
++  const client = createIndividualCancellation(f.transport);
++  await assert.rejects(client.cancel(42, cancellationQuote(f.snapshot())), error => error.detail === 'Cannot cancel registration after deadline'); assert.equal(client.isUncertain(42), false);
++});
++test('financial terms are only used for confirmed competition and clinic registrations, never Cancha or waitlist', () => {
++  for (const type of ['PADEL_CLINIC', 'KING_OF_COURT', 'AMERICANO']) {
++    assert.equal(cancellationTerms({ type }, 'CONFIRMED'), 'financial'); assert.equal(cancellationTerms({ type }, 'WAITLIST'), 'waitlist');
++  }
++  for (const status of ['CONFIRMED', 'WAITLIST']) assert.equal(cancellationTerms({ type: 'CANCHA_ABIERTA' }, status), 'cancha');
++  assert.deepEqual(Object.keys(cancellationCopy.ru).sort(), Object.keys(cancellationCopy.es).sort());
++  assert.deepEqual(Object.keys(cancellationCopy.ru).sort(), Object.keys(cancellationCopy.en).sort());
++});
+diff --git a/mobile-app/tests/authMutations.test.mjs b/mobile-app/tests/authMutations.test.mjs
+--- a/mobile-app/tests/authMutations.test.mjs
++++ b/mobile-app/tests/authMutations.test.mjs
+@@ -40,3 +40,15 @@
+   await f.client.saveContact({ telegramUsername: '@test_person' }); const call = f.calls.at(-1);
+   assert.equal(call.init.method, 'PATCH'); assert.equal(call.init.credentials, 'omit'); assert.deepEqual(JSON.parse(call.init.body), { telegramUsername: '@test_person' });
+ });
++test('cancellation uses Bearer and encoded form reason, never URL, player ID, cookies or automatic replay', async () => {
++  const f = fixture(() => json({ success: true })); await f.client.login(player.email, 'test-only-password');
++  await f.client.cancelIndividual(42, '  Не смогу & gracias + 1  '); const call = f.calls.at(-1);
++  assert.equal(call.url, 'https://1-padel.com/players/tournaments/42/cancel'); assert.equal(call.init.method, 'POST');
++  assert.equal(call.init.credentials, 'omit'); assert.match(call.init.headers['Content-Type'], /application\/x-www-form-urlencoded/);
++  assert.equal(call.init.headers.Authorization, 'Bearer test-access'); assert.equal(new URLSearchParams(call.init.body).get('reason'), 'Не смогу & gracias + 1');
++  for (const status of [401, 403, 400]) {
++    const g = fixture(() => json({ success: false, message: 'Cannot cancel registration after deadline' }, status)); await g.client.login(player.email, 'test-only-password');
++    await assert.rejects(g.client.cancelIndividual(42), { code: status === 401 ? 'REVIEW_REQUIRED' : status === 403 ? 'FORBIDDEN' : 'REJECTED' });
++    assert.equal(g.calls.filter(item => item.url.endsWith('/cancel')).length, 1);
++  }
++});
+diff --git a/docs/mobile-individual-cancellation.md b/docs/mobile-individual-cancellation.md
+new file mode 100644
+--- /dev/null
++++ b/docs/mobile-individual-cancellation.md
+@@ -0,0 +1,64 @@
++# Индивидуальная отмена в 1Padel.App
++
++База проверки: master `6d7f800df5da1aaf8af4ebcdb3cc83a08bc77640` (PR661), 2026-10-20.
++Изменения только клиента и документации. Серверный алгоритм отмены и аутентификация не меняются.
++
++## Сверка с исходным сайтом
++
++- `Tournament.canCancelRegistration()`: now строго раньше deadlineCancelacion; при null — начало минус24часа.
++  Условие общее для всех форматов и статусов, в том числе WAITLIST и Cancha. Исключений в приложении не добавлено.
++- `TournamentService.cancelRegistration()`: находит запись по текущему игроку и событию, проверяет isActive и срок,
++  вызывает cancel(reason). У CONFIRMED запускает processWaitlistForTournament, который автоматически подтверждает
++  следующего игрока и отправляет email. Восстановление старого места после отмены не гарантируется.
++- `PlayerDashboardController.cancelRegistration()`: POST `/players/tournaments/{id}/cancel`, principal игрока,
++  необязательный @RequestParam reason. JSON success:true — подтверждение сервера; JSON400 success:false — бизнес-отказ.
++  Форма application/x-www-form-urlencoded поддерживается @RequestParam, не требуется менять сервер.
++- `static/js/i18n/messages-{ru,es,en}.js`, regConfirm.individual/clinic: финансовые условия отмены менее24часов,
++  полный взнос и возможный возврат при оплатившем заменяющем игроке. Clinic не использует штраф−10.
++- regConfirm.cancha: заранее уведомить организатора; финансовые условия соревнований сюда не перенесены.
++
++### Два срока, которые нельзя незаметно объединять
++
++На сайте текст финансовых условий жёстко ссылается на24часа, а технический deadlineCancelacion может быть настроен иначе.
++Приложение явно показывает фактический срок *самостоятельной отмены* и отдельно финансовое условие сайта «менее24часов».
++Оно не обещает бесплатную отмену до произвольного индивидуального deadline и не рассчитывает задолженность/возврат.
++При поздней, но технически разрешённой отмене CONFIRMED выводится предупреждение о финансовых условиях.
++Изменять саму финансовую политику сайта этим патчем не требуется.
++
++## Поведение клиента
++
++- Четыре поддержанных INDIVIDUAL-формата; CONFIRMED, WAITLIST, WAITLIST_INVITED.
++- Только предстоящие активные записи; история/завершённые события/пары не используют этот POST из приложения.
++- Отмена не зависит от того, открыта ли сейчас регистрация новых игроков.
++- Открытие/повторная проверка — только GET. Для отправки — отдельное явное согласие и красная кнопка подтверждения.
++- Прямо перед POST — свежие детали и own registrations. Смена статуса WAITLIST→CONFIRMED, цены, описания,
++  даты, места, срока или registrationDate сбрасывает согласие, без POST.
++- Если активной записи уже нет, показывается «Активной записи уже нет», а не придуманная успешная отмена.
++- После success:true показывается подтверждение; возвращение в «Мои мероприятия» заново запрашивает список.
++  Отменённая запись не добавляется искусственно в историю: текущий сервер не возвращает её в historical.
++- Срок прошёл: POST заблокирован, переход на сайт и предложение связаться с организатором.
++- Нет контакта/уровня: это не условия отмены, клиент не требует повторно заполнить их.
++- Причина только в теле формы, без userId. Bearer, credentials:omit, redirect:manual, HTTPS — как в действующем клиенте.
++- Двойное нажатие блокируется. POST не повторяется автоматически при401/обрыве/5xx/неверном формате ответа.
++  Неопределённый исход блокирует следующую отмену на этой модели; доступна только сверка GET.
++  Если запись всё ещё активна, это не доказательство завершения первого запроса — повтор не разблокируется.
++- Смена аккаунта во время проверки останавливает операцию. Модель отдельная для каждого аккаунта.
++
++## Проверки и ограничения
++
++63 Node-теста (15 новых, включая транспорт формы), TypeScript и production Expo web export `/app/`.
++Ручной браузерный проход на390×844: отмена→подтверждение→список без активной записи; истёкший срок;
++переход WAITLIST→CONFIRMED с повторным согласием и нулём отмен; потеря ответа с сохранением одной отправки.
++Это изолированный тестовый транспорт, не реальная отмена на проде. Запись заказчика на тренировку не изменялась.
++
++Перед деплоем применить патч к актуальному master, повторить тесты и сборку, проверить на специально созданном
++тестовом игроке/мероприятии: реальный Bearer POST с reason, снятие своей записи, обновление списка,
++освобождение места и обработка очереди; затем удалить только созданные тестовые данные по правилам проекта.
++Отменять реальные заявки заказчика без отдельного указания нельзя.
++
++Сервер не поддерживает атомарную проверку версии заявки/условий или idempotency key.
++Клиентская свежая проверка уменьшает, но не устраняет гонку между последним GET и POST.
++registrationDate используется для обнаружения переоформления записи, если сервер его возвращает.
++Неопределённое состояние модели хранится в памяти текущей сессии приложения, не переживает полную перезагрузку страницы.
++Дата/срок на экране используют часы устройства, окончательное решение — часы сервера.
++Если публичные детали недоступны (например, скрытое событие), отмена в приложении блокируется и остаётся сайт.
+diff --git a/docs/endpoints/player-actions.md b/docs/endpoints/player-actions.md
+--- a/docs/endpoints/player-actions.md
++++ b/docs/endpoints/player-actions.md
+@@ -84,19 +84,19 @@
+ 
+ ## POST `/players/tournaments/{tournamentId}/cancel`
+ 
+-**Кто вызывает:** JavaScript (кнопка отмены регистрации).  
++**Кто вызывает:** JavaScript сайта и 1Padel.App (индивидуальная отмена из «Моих мероприятий»).  
+ **Аутентификация:** `ROLE_PLAYER`.
+ 
+ ### Алгоритм
+ 
+ 1. Вызывает `TournamentService.cancelRegistration()`.
+ 2. Делает повторную проверку через `getRegistration()` чтобы убедиться в отмене.
+-3. При успехе — запускает логику листа ожидания (в сервисе): следующий WAITLIST-игрок переходит в WAITLIST_INVITED.
++3. При успехе — запускает логику листа ожидания (в сервисе): следующий WAITLIST-игрок автоматически переходит в CONFIRMED и получает email (основной путь processWaitlistForTournament → autoConfirmFromWaitlist).
+ 
+ ### Контракт
+ 
+ **Path param:** `tournamentId`  
+-**Query param:** `reason` (необязательный) — причина отмены
++**Request param:** `reason` (необязательный) — причина отмены; сайт передаёт query, приложение — form body `application/x-www-form-urlencoded`. Игрок определяется по principal, не по клиентскому playerId.
+ 
+ **Response 200 OK**:
+ ```json
