@@ -1,0 +1,772 @@
+diff --git a/mobile-app/App.js b/mobile-app/App.js
+--- a/mobile-app/App.js
++++ b/mobile-app/App.js
+@@ -11,7 +11,8 @@
+ import { messages, organizerMessages } from './src/copy';
+ import { calculateRanking, validateResult } from './src/scoring';
+ import { colors as COLORS } from './src/theme';
+-import IndividualBookingScreen from './src/IndividualBookingScreen';
++import BookingEntry from './src/BookingEntry';
++import PairBookingLab from './src/PairBookingLab';
+ import { readBookingIntent, saveBookingIntent } from './src/bookingIntent';
+ import IndividualBookingLab from './src/IndividualBookingLab';
+ 
+@@ -134,6 +135,7 @@
+ }
+ 
+ export default function App() {
++  if (Platform.OS === 'web' && typeof window !== 'undefined' && new URL(window.location.href).searchParams.get('screen') === 'pair-booking-check') return <PairBookingLab />;
+   if (Platform.OS === 'web' && typeof window !== 'undefined' && new URL(window.location.href).searchParams.get('screen') === 'individual-booking-test') return <IndividualBookingLab />;
+   return <AuthProvider><AppContent /></AuthProvider>;
+ }
+@@ -145,6 +147,7 @@
+   const [showLogin, setShowLogin] = useState(() => Platform.OS === 'web' && typeof window !== 'undefined' && new URL(window.location.href).searchParams.get('screen') === 'login');
+   const [language, setLanguage] = useState('ru');
+   const [bookingId, setBookingId] = useState(null);
++  const [accountRevision, setAccountRevision] = useState(0);
+   const [pendingBookingId, setPendingBookingId] = useState(readBookingIntent);
+   function completeLogin() {
+     if (pendingBookingId !== null) { setBookingId(pendingBookingId); setPendingBookingId(null); setMode('player'); saveBookingIntent(null); }
+@@ -174,9 +177,9 @@
+           </TouchableOpacity>)}
+         </View>
+       </View>
+-      <View style={[styles.body, (showLogin || bookingId !== null) && styles.hidden]}>{mode === 'player' ? <PlayerScreen language={language} onBook={startBooking} /> : mode === 'account' ? (auth.profile ? <MyEventsScreen language={language} onBrowse={() => setMode('player')} /> : <LoginScreen language={language} onClose={() => setMode('player')} onBrowse={() => setMode('player')} onSuccess={() => setMode('account')} />) : <OrganizerScreen language={language} savedResult={savedResult} onSaveResult={setSavedResult} />}</View>
++      <View style={[styles.body, (showLogin || bookingId !== null) && styles.hidden]}>{mode === 'player' ? <PlayerScreen language={language} onBook={startBooking} /> : mode === 'account' ? (auth.profile ? <MyEventsScreen key={accountRevision} language={language} onBrowse={() => setMode('player')} onManagePair={startBooking} /> : <LoginScreen language={language} onClose={() => setMode('player')} onBrowse={() => setMode('player')} onSuccess={() => setMode('account')} />) : <OrganizerScreen language={language} savedResult={savedResult} onSaveResult={setSavedResult} />}</View>
+       {showLogin && <LoginScreen language={language} onClose={closeLogin} onBrowse={() => { setMode('player'); closeLogin(); }} onSuccess={completeLogin} />}
+-      {bookingId !== null && auth.profile && !showLogin && <IndividualBookingScreen key={`${bookingId}:${auth.profile.id}`} tournamentId={bookingId} booking={auth.booking} profileName={auth.profile.name} language={language} onClose={() => setBookingId(null)} onMyEvents={() => { setBookingId(null); setMode('account'); }} />}
++      {bookingId !== null && auth.profile && !showLogin && <BookingEntry key={`${bookingId}:${auth.profile.id}`} tournamentId={bookingId} language={language} onClose={() => setBookingId(null)} onMyEvents={() => { setBookingId(null); setAccountRevision(value => value + 1); setMode('account'); }} />}
+       {!showLogin && bookingId === null && <View style={styles.tabBar}>
+         <TouchableOpacity accessibilityRole="tab" accessibilityState={{ selected: mode === 'player' }}
+           onPress={() => setMode('player')} style={[styles.tab, mode === 'player' && styles.tabActive]}>
+diff --git a/mobile-app/src/AuthContext.tsx b/mobile-app/src/AuthContext.tsx
+--- a/mobile-app/src/AuthContext.tsx
++++ b/mobile-app/src/AuthContext.tsx
+@@ -5,6 +5,7 @@
+ import type { Profile } from './auth';
+ import { createNativeSessionStore, createWebSessionStore } from './sessionStore';
+ import { createIndividualBooking } from './individualBooking';
++import { createPairBooking } from './pairBooking';
+ import { createScheduleClient } from './schedule';
+ 
+ const secureKey = 'onepadel.refresh.v1';
+@@ -18,7 +19,7 @@
+ 
+ type Auth = { profile: Profile | null; restoring: boolean; restoreError: string | null; googleCode: string | null;
+   login: (email: string, password: string) => Promise<void>; google: () => Promise<void>; cancelGoogle: () => void;
+-  logout: () => Promise<void>; retryRestore: () => Promise<void>; client: ReturnType<typeof createAuthClient>; booking: ReturnType<typeof createIndividualBooking> };
++  logout: () => Promise<void>; retryRestore: () => Promise<void>; client: ReturnType<typeof createAuthClient>; booking: ReturnType<typeof createIndividualBooking>; pair: ReturnType<typeof createPairBooking> };
+ const Context = createContext<Auth | null>(null);
+ export function AuthProvider({ children }: { children: React.ReactNode }) {
+   const [profile, setProfile] = useState<Profile | null>(null);
+@@ -33,6 +34,11 @@
+     const baseUrl = Platform.OS === 'web' && typeof window !== 'undefined' && window.location.protocol === 'https:' && ['1-padel.com', 'www.1-padel.com'].includes(window.location.hostname) ? window.location.origin : 'https://1-padel.com';
+     const schedule = createScheduleClient({ baseUrl });
+     return createIndividualBooking({ ...client, details: id => schedule.details(id, 'es') });
++  }, [client, profile?.id]);
++  const pair = useMemo(() => {
++    const baseUrl = Platform.OS === 'web' && typeof window !== 'undefined' && window.location.protocol === 'https:' && ['1-padel.com', 'www.1-padel.com'].includes(window.location.hostname) ? window.location.origin : 'https://1-padel.com';
++    const schedule = createScheduleClient({ baseUrl });
++    return createPairBooking({ ...client, details: id => schedule.details(id, 'es') }, profile?.id ?? null);
+   }, [client, profile?.id]);
+   const retryRestore = useCallback(async () => {
+     setRestoring(true); setRestoreError(null);
+@@ -62,6 +68,6 @@
+     cancelGoogle(); setRestoreError(null); setProfile(await client.login(email, password));
+   }
+   async function logout() { cancelGoogle(); await client.logout(); setProfile(null); }
+-  return <Context.Provider value={{ profile, restoring, restoreError, googleCode, login, google, cancelGoogle, logout, retryRestore, client, booking }}>{children}</Context.Provider>;
++  return <Context.Provider value={{ profile, restoring, restoreError, googleCode, login, google, cancelGoogle, logout, retryRestore, client, booking, pair }}>{children}</Context.Provider>;
+ }
+ export function useAuth() { const value = useContext(Context); if (!value) throw new Error('AuthProvider required'); return value; }
+diff --git a/mobile-app/src/BookingEntry.tsx b/mobile-app/src/BookingEntry.tsx
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/src/BookingEntry.tsx
+@@ -0,0 +1,18 @@
++import React,{useEffect,useMemo,useState} from 'react';
++import {ActivityIndicator,Linking,Platform,Text,TouchableOpacity,View} from 'react-native';
++import {useAuth} from './AuthContext';
++import {createScheduleClient} from './schedule';
++import type {Language,PublicTournament} from './schedule';
++import {isPairEvent} from './pairBooking';
++import {isIndividualEvent} from './individualBooking';
++import PairBookingScreen from './PairBookingScreen';
++import IndividualBookingScreen from './IndividualBookingScreen';
++import {pairCopy} from './pairCopy';
++export default function BookingEntry({tournamentId,language,onClose,onMyEvents}:{tournamentId:number;language:Language;onClose:()=>void;onMyEvents:()=>void}){
++ const auth=useAuth();const [event,setEvent]=useState<PublicTournament|null>(null);const [failed,setFailed]=useState(false);
++ const client=useMemo(()=>createScheduleClient({baseUrl:Platform.OS==='web'&&typeof window!=='undefined'&&window.location.protocol==='https:'&&['1-padel.com','www.1-padel.com'].includes(window.location.hostname)?window.location.origin:'https://1-padel.com'}),[]);
++ useEffect(()=>{let alive=true;setEvent(null);setFailed(false);client.details(tournamentId,language).then(e=>{if(alive)setEvent(e);}).catch(()=>{if(alive)setFailed(true);});return()=>{alive=false;};},[client,tournamentId,language]);
++ if(event&&isPairEvent(event))return <PairBookingScreen tournamentId={tournamentId} gateway={auth.pair} language={language} profileName={auth.profile?.name??''} onClose={onClose} onMyEvents={onMyEvents}/>;
++ if(event&&isIndividualEvent(event))return <IndividualBookingScreen tournamentId={tournamentId} booking={auth.booking} language={language} profileName={auth.profile?.name??''} onClose={onClose} onMyEvents={onMyEvents}/>;
++ const t=pairCopy[language];return <View style={{flex:1,padding:20,gap:16}}><TouchableOpacity accessibilityRole="button" onPress={onClose}><Text>{t.back}</Text></TouchableOpacity>{failed||event?<><Text>{t.unavailable}</Text><TouchableOpacity accessibilityRole="link" onPress={()=>void Linking.openURL(event?.websiteUrl??`https://1-padel.com/torneo/${tournamentId}`)}><Text>{t.site}</Text></TouchableOpacity></>:<><ActivityIndicator/><Text>{t.loading}</Text></>}</View>;
++}
+diff --git a/mobile-app/src/MyEventsScreen.tsx b/mobile-app/src/MyEventsScreen.tsx
+--- a/mobile-app/src/MyEventsScreen.tsx
++++ b/mobile-app/src/MyEventsScreen.tsx
+@@ -1,3 +1,6 @@
++import { isPairEvent } from './pairBooking';
++import { pairCopy } from './pairCopy';
++import type { PublicTournament } from './schedule';
+ import React, { useEffect, useMemo, useState } from 'react';
+ import { ActivityIndicator, Linking, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+ import { useAuth } from './AuthContext';
+@@ -97,7 +100,7 @@
+     "logoutError": "Could not remove the saved session. Tap Sign out again."
+   }
+ };
+-export default function MyEventsScreen({ language, onBrowse }: { language: Language; onBrowse: () => void }) {
++export default function MyEventsScreen({ language, onBrowse, onManagePair }: { language: Language; onBrowse: () => void; onManagePair?: (event: PublicTournament) => void }) {
+   const auth = useAuth();
+   const t = copy[language];
+   const bt = bookingCopy[language];
+@@ -135,6 +138,7 @@
+       <Text style={styles.subtitle}>{item.event.club.name}</Text>
+       {item.waitlistPosition != null && item.active && <Text style={styles.subtitle}>{t.waitPosition}: {item.waitlistPosition}</Text>}
+       <View style={styles.bottom}><Text style={styles.price}>{eventPrice(item.event, language)}</Text><TouchableOpacity accessibilityRole="link" onPress={() => Linking.openURL(item.event.websiteUrl)} style={styles.open}><Text style={styles.link}>{t.open} ↗</Text></TouchableOpacity></View>
++      {!history && isPairEvent(item.event) && onManagePair && <TouchableOpacity accessibilityRole="button" onPress={() => onManagePair(item.event)} style={styles.cancelLink}><Text style={styles.link}>{pairCopy[language].manage} ›</Text></TouchableOpacity>}
+       {cancellable(item) && cancelling !== item.event.id && <TouchableOpacity accessibilityRole="button" onPress={() => setCancelling(item.event.id)} style={styles.cancelLink}><Text style={[styles.link, styles.cancelLinkText]}>{bt.cancelAction}</Text></TouchableOpacity>}
+       {cancelling === item.event.id && <CancelBookingPanel tournamentId={item.event.id} booking={auth.booking} language={language} onClose={() => setCancelling(null)} onCancelled={() => { setCancelling(null); setRevision(value => value + 1); }} />}
+     </View>)}
+diff --git a/mobile-app/src/PairBookingLab.tsx b/mobile-app/src/PairBookingLab.tsx
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/src/PairBookingLab.tsx
+@@ -0,0 +1,23 @@
++import React,{useMemo,useState} from 'react';
++import {ScrollView,Text,TouchableOpacity,View} from 'react-native';
++import {SafeAreaProvider,SafeAreaView} from 'react-native-safe-area-context';
++import PairBookingScreen from './PairBookingScreen';
++import {createPairBooking} from './pairBooking';
++import type {PublicTournament} from './schedule';
++import type {Language} from './schedule';
++import {AuthError} from './auth';
++import {colors as c} from './theme';
++const scenarios=['Готовая пара','Резерв','Добавить партнёра','Поиск пары','Обрыв связи','Изменилась цена'] as const;
++type Scenario=typeof scenarios[number];
++function laboratory(scenario:Scenario,onWrite:()=>void){
++ const event:PublicTournament={id:90002,name:'Test pair',type:'AMERICANO_TEAMS',modality:'DOBLES',gender:'MASCULINO',level:'C9',club:{id:1,name:'Тестовый клуб',address:null},startsAt:new Date(Date.now()+7*86400000).toISOString(),timeZone:'America/Argentina/Buenos_Aires',duration:'3h',price:30000,currency:'ARS',status:'REGISTRO_ABIERTO',capacity:12,occupied:scenario==='Резерв'?12:8,available:scenario==='Резерв'?0:4,capacityUnit:'PAIRS',registrationOpen:true,waitlistCount:2,cancellationDeadline:null,description:null,websiteUrl:'https://1-padel.com/'};
++ let own:Record<string,unknown>={registered:false};let reads=0;
++ const partners=[{id:20,nombre:'Алекс',apellido:'Морено',telefono:'+54 9 11 0000 0101',telegramUsername:'@alex_demo',nivelJugador:'C9'},{id:21,nombre:'Алекс',apellido:'Перес',telefono:'+54 9 11 0000 0102',telegramUsername:'@alex_perez_demo',nivelJugador:'C8'}];
++ const record=(status:string,isDouble=false,name:string|null=null)=>({registered:true,registrationId:123,status,isDoubleRegistration:isDouble,partnerId:isDouble?20:null,partnerFirstName:name,partnerLastName:null,waitlistPosition:status==='WAITLIST'?3:null,registrationDate:'2026-10-22T09:00:00'});
++ if(scenario==='Добавить партнёра')own=record('WAITLIST');if(scenario==='Поиск пары')own=record('SOLO_SEARCH');
++ const gateway=createPairBooking({sessionVersion:()=>1,details:async()=>{if(scenario==='Изменилась цена'&&++reads>=2)event.price=32000;return {...event};},pairOwn:async()=>({...own}),searchPartners:async(_id,q)=>partners.filter(p=>[p.nombre,p.apellido,p.telefono,p.telegramUsername].some(s=>s.toLowerCase().replace(/[^a-zа-я0-9]/g,'').includes(q.toLowerCase().replace(/[^a-zа-я0-9]/g,'')))),pairCandidates:async()=>[{registrationId:200,playerId:30,playerName:'Даниэль Тестовый',nivel:'C9',shareContacts:false}],pairWrite:async(_id,action,body)=>{onWrite();const b=body as Record<string,unknown>;const status=action==='register-solo'?b.soloType==='SEARCH'?'SOLO_SEARCH':'SOLO_ADD_LATER':scenario==='Резерв'||scenario==='Добавить партнёра'?'WAITLIST':'CONFIRMED';own=record(status,action!=='register-solo',action==='register-solo'?null:`${b.nombre} ${b.apellido}`);if(scenario==='Обрыв связи')throw new AuthError('NETWORK');return {success:true,status,waitlistPosition:status==='WAITLIST'?3:null};},proposePair:async()=>{onWrite();return {success:true};}},4);
++ return gateway;
++}
++export default function PairBookingLab(){const [scenario,setScenario]=useState<Scenario>('Готовая пара');const [writes,setWrites]=useState(0);const [language,setLanguage]=useState<Language>('ru');const [closed,setClosed]=useState(false);const gateway=useMemo(()=>laboratory(scenario,()=>setWrites(v=>v+1)),[scenario]);
++ return <SafeAreaProvider><SafeAreaView style={{flex:1,backgroundColor:c.white}}><View style={{padding:12,flexDirection:'row',justifyContent:'space-between'}}><Text style={{fontWeight:'800',color:c.ink}}>1-PADEL · проверка подключения</Text>{(['ru','es','en']as Language[]).map(l=><TouchableOpacity accessibilityRole="button" key={l} onPress={()=>setLanguage(l)}><Text>{l.toUpperCase()}</Text></TouchableOpacity>)}</View><ScrollView horizontal style={{flexGrow:0,maxHeight:48}} contentContainerStyle={{gap:8,padding:8}}>{scenarios.map(value=><TouchableOpacity key={value} accessibilityRole="tab" onPress={()=>{setScenario(value);setWrites(0);setClosed(false);}} style={{padding:9,backgroundColor:scenario===value?c.greenPale:c.white,borderRadius:12}}><Text>{value}</Text></TouchableOpacity>)}</ScrollView><Text style={{padding:8,fontSize:10}}>Тестовых отправок: {writes}</Text>{closed?<View style={{padding:20}}><Text>Мои мероприятия · тест</Text><TouchableOpacity accessibilityRole="button" onPress={()=>setClosed(false)}><Text>Вернуться к заявке</Text></TouchableOpacity></View>:<PairBookingScreen key={scenario} tournamentId={90002} gateway={gateway} language={language} profileName="Игрок · тестовый аккаунт" demo onClose={()=>setClosed(true)} onMyEvents={()=>setClosed(true)}/>}</SafeAreaView></SafeAreaProvider>;
++}
+diff --git a/mobile-app/src/PairBookingScreen.tsx b/mobile-app/src/PairBookingScreen.tsx
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/src/PairBookingScreen.tsx
+@@ -0,0 +1,99 @@
++import React,{useEffect,useRef,useState} from 'react';
++import {ActivityIndicator,KeyboardAvoidingView,Linking,Platform,ScrollView,StyleSheet,Text,TextInput,TouchableOpacity,View} from 'react-native';
++import {AuthError,PlayerRequestError} from './auth';
++import {PairError,canAddPartner,canProposePair,emptyPartner,isPairEvent,pairQuote,validPartner} from './pairBooking';
++import type {Candidate,Partner,PairMode,PairSnapshot,PairReceipt,createPairBooking} from './pairBooking';
++import {pairCopy} from './pairCopy';
++import {eventDate,eventPrice} from './schedule';
++import type {Language} from './schedule';
++import {messages} from './copy';
++import {cancellationDeadline} from './individualBooking';
++import {colors as c} from './theme';
++type Phase='choose'|'partner'|'solo'|'review'|'result'|'candidates'|'proposal';
++type FieldKey='first'|'last'|'phone'|'telegram';
++export default function PairBookingScreen({tournamentId,gateway,language,profileName,onClose,onMyEvents,demo=false}:{tournamentId:number;gateway:ReturnType<typeof createPairBooking>;language:Language;profileName:string;onClose:()=>void;onMyEvents:()=>void;demo?:boolean}) {
++ const t=pairCopy[language]; const [snapshot,setSnapshot]=useState<PairSnapshot|null>(null);const [receipt,setReceipt]=useState<PairReceipt|null>(null);
++ const [phase,setPhase]=useState<Phase>('choose');const [mode,setMode]=useState<PairMode>('WITH_PARTNER');const [adding,setAdding]=useState(false);
++ const [partner,setPartner]=useState<Partner>({...emptyPartner});const [manual,setManual]=useState(false);const [query,setQuery]=useState('');const [activeField,setActiveField]=useState<FieldKey|null>(null);
++ const [matches,setMatches]=useState<Partner[]>([]);const [looking,setLooking]=useState(false);const [share,setShare]=useState(false);
++ const [candidates,setCandidates]=useState<Candidate[]|null>(null);const [target,setTarget]=useState<Candidate|null>(null);
++ const [busy,setBusy]=useState(false);const [loading,setLoading]=useState(true);const [uncertain,setUncertain]=useState(false);const [error,setError]=useState<AuthError|null>(null);
++ const [sharePreview,setSharePreview]=useState(false);const running=useRef(false);const version=useRef(0);
++ function problem(e:unknown) {const issue=e instanceof AuthError?e:new AuthError('UNAVAILABLE');setError(issue);
++  if(issue instanceof PairError&&issue.snapshot)setSnapshot(issue.snapshot);
++  if(issue instanceof PairError&&issue.matches){setMatches(issue.matches);setPhase('partner');setPartner(p=>({...p,id:undefined}));}
++  if(issue.code==='UNCERTAIN')setUncertain(true);
++ }
++ async function perform(fn:()=>Promise<void>){if(running.current)return;running.current=true;const started=version.current;setBusy(true);setError(null);
++  try{await fn();}catch(e){if(started===version.current)problem(e);}finally{running.current=false;if(started===version.current){setBusy(false);setLoading(false);}}
++ }
++ async function check(){const started=version.current;await perform(async()=>{const next=await gateway.reconcile(tournamentId);if(started!==version.current)return;setSnapshot(next.snapshot);setUncertain(next.uncertain);setReceipt(null);setPhase(next.snapshot.own.registered?'result':'choose');});}
++ useEffect(()=>{version.current++;void check();return()=>{version.current++;};},[gateway,tournamentId]);
++ const lookup=manual?(activeField?partner[activeField]:''):query;
++ useEffect(()=>{let alive=true;setMatches([]);if(phase!=='partner'||partner.id||lookup.trim().length<2){setLooking(false);return;}
++  setLooking(true);const timer=setTimeout(()=>{gateway.search(tournamentId,lookup).then(rows=>{if(alive)setMatches(rows);}).catch(e=>{if(alive)problem(e);}).finally(()=>{if(alive)setLooking(false);});},300);
++  return()=>{alive=false;clearTimeout(timer);};
++ },[gateway,tournamentId,lookup,phase,partner.id,manual]);
++ const event=snapshot?.event;const own=snapshot?.own;const status=receipt?.status??own?.status;
++ const closed=!!event&&(!event.registrationOpen||event.status!=='REGISTRO_ABIERTO'||Date.parse(event.startsAt)<=Date.now());
++ const ready=!!(own?.isDouble&&own.partnerId)||!!(receipt&&mode==='WITH_PARTNER'&&['CONFIRMED','WAITLIST'].includes(receipt.status));
++ const label=(status&&t[status as keyof typeof t])||t.result;
++ function choose(value:PairMode){setMode(value);setAdding(false);setError(null);setReceipt(null);setPhase(value==='WITH_PARTNER'?'partner':'solo');}
++ function edit(field:FieldKey,value:string){setPartner(p=>({...p,id:undefined,[field]:value}));setActiveField(field);setError(null);}
++ function select(p:Partner){setPartner({...p});setActiveField(null);setQuery('');setMatches([]);setError(null);}
++ async function external(url:string){try{if(demo){setSharePreview(true);return;}await Linking.openURL(url);}catch{setError(new AuthError('UNAVAILABLE'));}}
++ const shareText=event?`${messages[language][event.type]} · ${eventDate(event.startsAt,event.timeZone,language)} · ${event.club.name}\n${label}\nhttps://1-padel.com/app/?event=${event.id}`:'';
++ let errorText=t.unavailable;
++ if(error instanceof PlayerRequestError)errorText=error.needLevel?t.needLevel:error.detail||t.unavailable;
++ else if(error){const key:Record<string,keyof typeof t>={CHANGED:'changed',CLOSED:'closed',EXISTING:'existing',INVALID_PARTNER:'invalid',PARTNER_UNAVAILABLE:'unavailablePartner',MATCH_REQUIRED:'matchRequired',UNCERTAIN:'uncertain'};errorText=t[key[error.code]??'unavailable'];}
++ const allowRetry=!error||error.code==='CHANGED';
++ function beginAdd(){setAdding(true);setMode('WITH_PARTNER');setPartner({...emptyPartner});setReceipt(null);setError(null);setPhase('partner');}
++ function showCandidates(){const started=version.current;setCandidates(null);setPhase('candidates');void perform(async()=>{const rows=await gateway.candidates(tournamentId);if(started===version.current)setCandidates(rows);});}
++ function matchRows(){return !!matches.length&&<View style={s.notice}><Text style={s.section}>{t.matches}</Text>{matches.map(p=><TouchableOpacity key={p.id} accessibilityRole="button" accessibilityLabel={`${t.selected}: ${p.first} ${p.last}`} onPress={()=>select(p)} style={s.person}><View style={{flex:1}}><Text style={s.fact}>{p.first} {p.last}</Text><Text style={s.small}>{p.level||'—'}{p.phone?` · WhatsApp …${p.phone.replace(/\D/g,'').slice(-4)}`:''}</Text></View><Text style={s.link}>＋</Text></TouchableOpacity>)}</View>;}
++ return <KeyboardAvoidingView style={s.screen} behavior={Platform.OS==='ios'?'padding':undefined}>
++  <View style={s.top}><Button secondary title={`‹ ${t.back}`} disabled={busy} onPress={()=>{if(phase==='review'){setPhase(mode==='WITH_PARTNER'?'partner':'solo');setError(null);}else if(phase==='partner'||phase==='solo'){setPhase(own?.registered?'result':'choose');setError(null);}else onClose();}}/><Text accessibilityRole="header" style={s.title}>{phase==='review'?t.review:phase==='partner'?t.partnerTitle:phase==='choose'?t.choose:t.title}</Text></View>
++  {demo&&<Text style={s.demo}>{t.demo}</Text>}
++  <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={s.content}>
++   {loading&&<View style={s.center}><ActivityIndicator color={c.orange}/><Text style={s.body}>{t.loading}</Text></View>}
++   {event&&<View style={s.card}><Text style={s.eventTitle}>{messages[language][event.type]}</Text><Text style={s.body}>{messages[language][event.gender]}{event.level?` · ${event.level.replaceAll('_','/')}`:''}</Text><Text style={s.fact}>{eventDate(event.startsAt,event.timeZone,language)}</Text><Text style={s.body}>{event.club.name}</Text><Text style={s.small}>{t.perPerson}: {eventPrice(event,language)}</Text></View>}
++   {!loading&&event&&(!isPairEvent(event)||closed)&&<Text accessibilityRole="alert" style={s.error}>{t.closed}</Text>}
++   {!loading&&event&&phase==='choose'&&!uncertain&&!closed&&isPairEvent(event)&&<View style={s.card}>{(['WITH_PARTNER','SEARCH','ADD_LATER'] as PairMode[]).map(value=><Button key={value} secondary title={value==='WITH_PARTNER'?t.withPartner:value==='SEARCH'?t.searchMode:t.laterMode} onPress={()=>choose(value)}/>)}</View>}
++   {phase==='partner'&&!uncertain&&<>
++    <View style={s.tabs}><Button secondary title={t.lookup} disabled={busy} onPress={()=>{setManual(false);setPartner({...emptyPartner});setQuery('');}}/><Button secondary title={t.manual} disabled={busy} onPress={()=>{setManual(true);setPartner({...emptyPartner});setActiveField(null);}}/></View>
++    {!manual&&!partner.id&&<><Field label={t.query} value={query} onChange={setQuery}/>{looking&&<ActivityIndicator/>}{matchRows()}{query.trim().length>=2&&!looking&&!matches.length&&<Text style={s.body}>{t.noMatches}</Text>}</>}
++    {!!partner.id&&<View style={s.notice}><Text style={s.section}>{partner.first} {partner.last}</Text><Text style={s.small}>{partner.level||'1‑Padel'}</Text><Button secondary title={t.change} onPress={()=>setPartner({...emptyPartner})}/></View>}
++    {manual&&!partner.id&&<View style={s.card}>{(['first','last','phone','telegram'] as FieldKey[]).map(field=><View key={field}><Field label={t[field]} value={partner[field]} onChange={value=>edit(field,value)} phone={field==='phone'}/>{activeField===field&&(looking?<ActivityIndicator/>:matchRows())}</View>)}</View>}
++   </>}
++   {phase==='solo'&&!uncertain&&<View style={s.card}><Text style={s.section}>{mode==='SEARCH'?t.searchMode:t.laterMode}</Text><Text style={s.body}>{mode==='SEARCH'?t.searchHint:t.laterHint}</Text>{mode==='SEARCH'?<><TouchableOpacity accessibilityRole="checkbox" accessibilityState={{checked:share}} onPress={()=>setShare(v=>!v)} style={s.check}><Text style={s.box}>{share?'☑':'☐'}</Text><Text style={s.body}>{t.shareContacts}</Text></TouchableOpacity><Text style={s.small}>{t.shareHint}</Text></>:event&&<><Text style={s.small}>{t.partnerBy}</Text><Text style={s.fact}>{eventDate(new Date(Date.parse(event.startsAt)-86400000).toISOString(),event.timeZone,language)}</Text></>}</View>}
++   {phase==='review'&&snapshot&&!uncertain&&<>
++    <View style={s.card}><Text style={s.section}>{t.participants}</Text><Text style={s.fact}>{profileName}</Text><Text style={s.fact}>{mode==='WITH_PARTNER'?`${partner.first} ${partner.last}`:mode==='SEARCH'?t.searchMode:t.laterMode}</Text>{mode==='WITH_PARTNER'&&!partner.id&&<Text style={s.small}>{t.newPlayer}</Text>}{mode==='WITH_PARTNER'&&!!partner.phone&&<Text style={s.small}>WhatsApp: {partner.phone}</Text>}{mode==='WITH_PARTNER'&&!!partner.telegram&&<Text style={s.small}>Telegram: {partner.telegram}</Text>}</View>
++    <View style={s.card}><Text style={s.fact}>{t.perPerson}: {eventPrice(snapshot.event,language)}</Text>{mode==='WITH_PARTNER'&&<Text style={s.fact}>{t.perPair}: {eventPrice({...snapshot.event,price:snapshot.event.price*2},language)}</Text>}<Text style={s.small}>{t.cancelBy}</Text><Text style={s.fact}>{eventDate(cancellationDeadline(snapshot.event),snapshot.event.timeZone,language)}</Text>{mode==='ADD_LATER'&&<><Text style={s.small}>{t.partnerBy}</Text><Text style={s.fact}>{eventDate(new Date(Date.parse(snapshot.event.startsAt)-86400000).toISOString(),snapshot.event.timeZone,language)}</Text></>}<Text style={s.body}>{t.noCharge}</Text><Button secondary title={t.conditions} onPress={()=>void external(snapshot.event.websiteUrl)}/></View>
++   </>}
++   {phase==='result'&&status&&!uncertain&&<View style={s.notice}><Text accessibilityRole="header" style={s.eventTitle}>{label}</Text>{(own?.partnerName||partner.first)&&<Text style={s.fact}>{own?.partnerName||`${partner.first} ${partner.last}`}</Text>}{(receipt?.waitlistPosition??own?.waitlistPosition)!=null&&<Text style={s.body}>{t.queue}: {receipt?.waitlistPosition??own?.waitlistPosition}</Text>}{own&&canAddPartner(own)&&<Button title={t.add} disabled={busy} onPress={beginAdd}/>} {own&&canProposePair(own)&&<Button title={t.candidates} disabled={busy} onPress={showCandidates}/>}<Button title={t.myEvents} onPress={onMyEvents}/></View>}
++   {phase==='result'&&ready&&event&&!uncertain&&<View style={s.card}><Text style={s.body}>{t.shareHintDone}</Text><Button secondary title={t.shareWhatsApp} onPress={()=>void external(`https://wa.me/?text=${encodeURIComponent(shareText)}`)}/><Button secondary title={t.shareTelegram} onPress={()=>void external(`https://t.me/share/url?url=${encodeURIComponent(`https://1-padel.com/app/?event=${event.id}`)}&text=${encodeURIComponent(shareText)}`)}/><Text style={s.small}>{t.noAutomatic}</Text>{sharePreview&&<Text style={s.body}>{shareText}</Text>}</View>}
++   {phase==='candidates'&&candidates&&<>{candidates.length===0&&<Text style={s.body}>{t.emptyCandidates}</Text>}{candidates.map(p=><View key={p.id} style={s.card}><Text style={s.section}>{p.name}</Text><Text style={s.small}>{p.level||'—'}</Text>{!p.shareContacts&&<Text style={s.small}>{t.hidden}</Text>}{p.shareContacts&&p.telegram&&<Text style={s.small}>{p.telegram}</Text>}<Button secondary title={t.propose} disabled={busy} onPress={()=>{setTarget(p);setPhase('proposal');}}/></View>)}</>}
++   {phase==='proposal'&&target&&<View style={s.card}><Text style={s.section}>{target.name}</Text><Text style={s.body}>{t.proposal}</Text></View>}
++   {error&&<Text accessibilityRole="alert" style={s.error}>{errorText}</Text>}
++   {error instanceof PlayerRequestError&&error.needLevel&&<Button secondary title={t.profile} onPress={()=>void external('https://1-padel.com/perfil')}/>}
++   {uncertain&&<View style={s.notice}><Text style={s.body}>{t.stillUncertain}</Text></View>}
++   {!loading&&(error||uncertain)&&<Button secondary title={t.retry} disabled={busy} onPress={()=>void check()}/>}
++   {!loading&&(!event||error||uncertain||closed)&&<Button secondary title={t.site} onPress={()=>void external(event?.websiteUrl??`https://1-padel.com/torneo/${tournamentId}`)}/>}
++  </ScrollView>
++  {['partner','solo','review','proposal'].includes(phase)&&!uncertain&&<View style={s.footer}>
++   {phase==='review'&&<Text style={s.caption}>{t.confirmText}</Text>}
++   <Button title={busy?t.busy:phase==='review'?adding?t.add:mode==='WITH_PARTNER'?t.register:t.submitSolo:phase==='proposal'?t.sendProposal:t.continue}
++    disabled={busy||loading||closed||!allowRetry||phase==='partner'&&(!validPartner(partner)||looking)} onPress={()=>{
++     if(!snapshot)return;
++     if(phase==='partner'||phase==='solo'){setPhase('review');setError(null);return;}
++     const started=version.current;void perform(async()=>{const value=phase==='proposal'&&target?await gateway.propose(tournamentId,pairQuote(snapshot),target.id):await gateway.submit(tournamentId,pairQuote(snapshot),mode,partner,share,adding);
++      if(started!==version.current)return;setReceipt(value);setPhase('result');
++      // Подтверждённый ответ не теряем, если дополнительный GET временно недоступен.
++      try{const latest=await gateway.load(tournamentId);if(started===version.current)setSnapshot(latest);}catch{/* Квитанция подтверждена сервером; список можно обновить отдельно. */}
++     });
++    }}/>
++  </View>}
++ </KeyboardAvoidingView>;
++}
++function Button({title,onPress,disabled=false,secondary=false}:{title:string;onPress:()=>void;disabled?:boolean;secondary?:boolean}){return <TouchableOpacity accessibilityRole="button" accessibilityState={{disabled}} disabled={disabled} onPress={onPress} style={[s.button,secondary&&s.secondary,disabled&&s.disabled]}><Text style={[s.buttonText,secondary&&s.link]}>{title}</Text></TouchableOpacity>;}
++function Field({label,value,onChange,phone=false}:{label:string;value:string;onChange:(v:string)=>void;phone?:boolean}){return <><Text style={s.small}>{label}</Text><TextInput accessibilityLabel={label} value={value} onChangeText={onChange} autoCapitalize="none" autoCorrect={false} keyboardType={phone?'phone-pad':'default'} maxLength={100} style={s.input}/></>;}
++const s=StyleSheet.create({screen:{flex:1,backgroundColor:c.background},top:{backgroundColor:c.white,paddingHorizontal:20,paddingBottom:14,borderBottomWidth:1,borderColor:c.line},title:{fontSize:25,lineHeight:31,fontWeight:'800',color:c.ink,marginTop:10},content:{width:'100%',maxWidth:540,alignSelf:'center',padding:18,gap:13},card:{backgroundColor:c.white,borderWidth:1,borderColor:c.line,padding:17,borderRadius:17},notice:{backgroundColor:c.greenPale,padding:17,borderRadius:17},eventTitle:{fontSize:22,lineHeight:29,fontWeight:'800',color:c.ink},section:{fontSize:16,lineHeight:23,fontWeight:'800',color:c.ink},fact:{fontSize:14,lineHeight:22,fontWeight:'700',color:c.ink,marginTop:7},body:{fontSize:13,lineHeight:21,color:c.muted,marginTop:6},small:{fontSize:11,lineHeight:18,color:c.muted,marginTop:7},caption:{fontSize:12,lineHeight:19,color:c.ink,textAlign:'center',marginBottom:7},input:{backgroundColor:c.white,borderWidth:1,borderColor:c.line,borderRadius:11,minHeight:49,padding:12,fontSize:16,color:c.ink,marginTop:6},person:{flexDirection:'row',alignItems:'center',gap:9,paddingVertical:9},link:{color:c.green,fontSize:12,fontWeight:'700'},button:{backgroundColor:c.orange,borderRadius:12,minHeight:48,padding:12,justifyContent:'center',alignItems:'center',marginTop:8},buttonText:{fontSize:14,fontWeight:'800',color:c.white,textAlign:'center'},secondary:{backgroundColor:c.white,borderWidth:1,borderColor:c.line},disabled:{opacity:.4},tabs:{flexDirection:'row',gap:9,justifyContent:'space-around'},error:{fontSize:13,lineHeight:21,color:'#A13F31'},footer:{backgroundColor:c.white,borderTopWidth:1,borderColor:c.line,paddingHorizontal:18,paddingVertical:10},center:{padding:25,alignItems:'center',gap:9},check:{flexDirection:'row',gap:9,alignItems:'center',paddingVertical:10},box:{fontSize:24,color:c.green},demo:{padding:8,textAlign:'center',fontSize:10,color:c.amber,backgroundColor:c.amberPale}});
+diff --git a/mobile-app/src/PlayerScreen.tsx b/mobile-app/src/PlayerScreen.tsx
+--- a/mobile-app/src/PlayerScreen.tsx
++++ b/mobile-app/src/PlayerScreen.tsx
+@@ -1,3 +1,5 @@
++import { isPairEvent } from './pairBooking';
++import { readSharedEventId } from './sharedEvent';
+ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+ import { ActivityIndicator, Alert, Linking, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+ import { SafeAreaView } from 'react-native-safe-area-context';
+@@ -112,7 +114,7 @@
+   const [draft, setDraft] = useState<ScheduleFilters>({ ...defaultFilters });
+   const [filterVisible, setFilterVisible] = useState(false);
+   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
+-  const [selectedId, setSelectedId] = useState<number | null>(null);
++  const [selectedId, setSelectedId] = useState<number | null>(() => typeof window !== 'undefined' && window.location ? readSharedEventId(window.location.search) : null);
+   const scroll = useRef<ScrollView>(null);
+   const listOffset = useRef(0);
+   useEffect(() => { scroll.current?.scrollTo({ y: selectedId === null ? listOffset.current : 0, animated: false }); }, [selectedId]);
+@@ -255,10 +257,10 @@
+       <View style={styles.bookingInner}>
+         <View style={styles.bookingRow}>
+           <View style={styles.bookingPrice}><Text style={styles.caption}>{t.priceFrom}</Text><Text style={styles.detailPrice}>{eventPrice(selected, language)}</Text></View>
+-          <View style={styles.bookingAction}><Action title={selected.registrationOpen ? isIndividualEvent(selected) && onBook ? selected.available > 0 ? bookingCopy[language].openInline : bookingCopy[language].waitInline : selected.available > 0 ? t.book : t.waitlist : t.openEvent}
+-            disabled={isFixture} onPress={() => { if (selected.registrationOpen && isIndividualEvent(selected) && onBook) onBook(selected); else void openWebsite(selected.websiteUrl); }} /></View>
++          <View style={styles.bookingAction}><Action title={selected.registrationOpen ? (isIndividualEvent(selected) || isPairEvent(selected)) && onBook ? selected.available > 0 ? bookingCopy[language].openInline : bookingCopy[language].waitInline : selected.available > 0 ? t.book : t.waitlist : t.openEvent}
++            disabled={isFixture} onPress={() => { if (selected.registrationOpen && (isIndividualEvent(selected) || isPairEvent(selected)) && onBook) onBook(selected); else void openWebsite(selected.websiteUrl); }} /></View>
+         </View>
+-        <Text style={styles.bookingNote}>{selected.registrationOpen && isIndividualEvent(selected) && onBook ? bookingCopy[language].inlineNote : t.siteNote}</Text>
++        <Text style={styles.bookingNote}>{selected.registrationOpen && (isIndividualEvent(selected) || isPairEvent(selected)) && onBook ? bookingCopy[language].inlineNote : t.siteNote}</Text>
+       </View>
+     </View>}
+     <Modal visible={filterVisible} transparent animationType="slide" onRequestClose={() => setFilterVisible(false)}>
+diff --git a/mobile-app/src/auth.ts b/mobile-app/src/auth.ts
+--- a/mobile-app/src/auth.ts
++++ b/mobile-app/src/auth.ts
+@@ -103,6 +103,8 @@
+   });
+   return [...upcoming, ...historical];
+ }
++
++function validEventId(id: number) { if (!Number.isSafeInteger(id) || id < 1) throw new AuthError('UNAVAILABLE'); return id; }
+ 
+ export function createAuthClient({ baseUrl = 'https://1-padel.com', fetchImpl = fetch, store, onExpired = () => {}, timeoutMs = 15000 }: {
+   baseUrl?: string; fetchImpl?: typeof fetch; store: Store; onExpired?: () => void; timeoutMs?: number;
+@@ -229,6 +231,19 @@
+       if (!Number.isSafeInteger(tournamentId) || tournamentId < 1) throw new AuthError('UNAVAILABLE');
+       return authorized(`/players/tournaments/${tournamentId}/cancel`, { method: 'POST', business: true });
+     },
++    async pairOwn(tournamentId: number) { return authorized(`/players/tournaments/${validEventId(tournamentId)}/my-registration`); },
++    async searchPartners(tournamentId: number, query: string) {
++      const params = new URLSearchParams({ query: query.trim(), tournamentId: String(validEventId(tournamentId)) });
++      return authorized(`/api/players/search?${params}`);
++    },
++    async pairCandidates(tournamentId: number) { return authorized(`/api/tournaments/double/${validEventId(tournamentId)}/looking-for-partner`); },
++    async pairWrite(tournamentId: number, action: 'register' | 'register-solo' | 'add-partner', body: unknown) {
++      if (!['register', 'register-solo', 'add-partner'].includes(action)) throw new AuthError('UNAVAILABLE');
++      return authorized(`/api/tournaments/double/${validEventId(tournamentId)}/${action}`, { method: 'POST', body, business: true });
++    },
++    async proposePair(tournamentId: number, targetId: number) {
++      return authorized(`/api/tournaments/double/${validEventId(tournamentId)}/propose-pair/${validEventId(targetId)}`, { method: 'POST', business: true });
++    },
+     sessionVersion() { return epoch; },
+     cancelPending() { epoch++; refreshTask = null; },
+     logout: clear,
+diff --git a/mobile-app/src/pairBooking.ts b/mobile-app/src/pairBooking.ts
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/src/pairBooking.ts
+@@ -0,0 +1,133 @@
++import { AuthError, PlayerRequestError } from './auth.ts';
++import type { PublicTournament } from './schedule.ts';
++import { bookingQuote } from './individualBooking.ts';
++export type PairMode = 'WITH_PARTNER' | 'SEARCH' | 'ADD_LATER';
++export type Partner = { id?: number; first: string; last: string; phone: string; telegram: string; level?: string };
++export type PairOwn = { registered: boolean; id: number | null; status: string | null; waitlistPosition: number | null; registeredAt: string | null; isDouble: boolean; partnerId: number | null; partnerName: string | null };
++export type PairSnapshot = { event: PublicTournament; own: PairOwn };
++export type PairReceipt = { status: string; waitlistPosition: number | null };
++export type Candidate = { id: number; playerId: number; name: string; level: string | null; shareContacts: boolean; telegram: string | null; phone: string | null };
++const statuses = ['CONFIRMED','WAITLIST','WAITLIST_INVITED','PARTNER_INVITED','PAIR_REGISTERED','SOLO_SEARCH','SOLO_ADD_LATER','SOLO_EXPIRED'];
++const rec = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
++const id = (v: unknown): v is number => Number.isSafeInteger(v) && Number(v) > 0;
++const str = (v: unknown) => typeof v === 'string' ? v : '';
++export const emptyPartner: Partner = { first: '', last: '', phone: '', telegram: '' };
++export const digits = (v: string) => v.replace(/\D/g, '');
++export function validPartner(p: Partner) {
++  if (p.id) return id(p.id) && !!p.first.trim() && !!p.last.trim();
++  return !!p.first.trim() && !!p.last.trim() && /^\+?[0-9\s\-()]{8,20}$/.test(p.phone.trim()) && digits(p.phone).length >= 8
++    && (!p.telegram.trim() || /^@?[A-Za-z][A-Za-z0-9_]{4,31}$/.test(p.telegram.trim()));
++}
++export function isPairEvent(event: PublicTournament) { return event.modality === 'DOBLES' && ['AMERICANO_TEAMS','AMERICANO'].includes(event.type); }
++export function canAddPartner(own: PairOwn) { return own.registered && (own.status === 'SOLO_ADD_LATER' || own.status === 'WAITLIST' && !own.isDouble && !own.partnerId); }
++export function canProposePair(own: PairOwn) { return own.registered && ['SOLO_SEARCH','SOLO_ADD_LATER'].includes(own.status ?? ''); }
++export function pairQuote(s: PairSnapshot) { return JSON.stringify([bookingQuote(s.event), s.own]); }
++export function parseOwn(value: unknown): PairOwn {
++  if (!rec(value) || typeof value.registered !== 'boolean') throw new AuthError('UNAVAILABLE');
++  if (!value.registered) return { registered: false, id:null, status:null, waitlistPosition:null, registeredAt:null, isDouble:false, partnerId:null, partnerName:null };
++  if (!id(value.registrationId) || !statuses.includes(str(value.status)) || typeof value.isDoubleRegistration !== 'boolean'
++    || !(value.partnerId == null || id(value.partnerId)) || !(value.waitlistPosition == null || id(value.waitlistPosition))) throw new AuthError('UNAVAILABLE');
++  return { registered:true, id:value.registrationId, status:str(value.status), waitlistPosition: value.waitlistPosition as number|null ?? null,
++    registeredAt: typeof value.registrationDate === 'string' ? value.registrationDate : null, isDouble:value.isDoubleRegistration,
++    partnerId:value.partnerId as number|null ?? null, partnerName:[str(value.partnerFirstName),str(value.partnerLastName)].filter(Boolean).join(' ') || null };
++}
++export function parsePartners(value: unknown): Partner[] {
++  if (!Array.isArray(value) || value.length > 100) throw new AuthError('UNAVAILABLE');
++  return value.map(p => {
++    if (!rec(p) || !id(p.id) || !str(p.nombre).trim() || !str(p.apellido).trim()) throw new AuthError('UNAVAILABLE');
++    // Узкое отображение: email и остальные поля полного PlayerResponseDto не сохраняем.
++    return { id:p.id, first:str(p.nombre), last:str(p.apellido), phone:str(p.telefono), telegram:str(p.telegramUsername), level:str(p.nivelJugador) };
++  });
++}
++export function parseCandidates(value: unknown): Candidate[] {
++  if (!Array.isArray(value)) throw new AuthError('UNAVAILABLE');
++  return value.map(p => {
++    if (!rec(p) || !id(p.registrationId) || !id(p.playerId) || !str(p.playerName)) throw new AuthError('UNAVAILABLE');
++    return { id:p.registrationId, playerId:p.playerId, name:str(p.playerName), level:str(p.nivel)||null, shareContacts:p.shareContacts===true,
++      phone:p.shareContacts===true ? str(p.telefono)||null:null, telegram:p.shareContacts===true ? str(p.telegramUsername)||null:null };
++  });
++}
++export class PairError extends AuthError {
++  snapshot?: PairSnapshot; matches?: Partner[];
++  constructor(code: string, snapshot?: PairSnapshot, matches?: Partner[]) { super(code); this.snapshot=snapshot; this.matches=matches; }
++}
++export type PairTransport = {
++  contactStatus?: () => Promise<unknown>; sessionVersion: () => number; details: (id:number)=>Promise<PublicTournament>; pairOwn:(id:number)=>Promise<unknown>;
++  searchPartners:(id:number,q:string)=>Promise<unknown>; pairCandidates:(id:number)=>Promise<unknown>;
++  pairWrite:(id:number,action:'register'|'register-solo'|'add-partner',body:unknown)=>Promise<unknown>;
++  proposePair:(id:number,target:number)=>Promise<unknown>;
++};
++export function createPairBooking(transport:PairTransport, playerId:number|null) {
++  const version=transport.sessionVersion(); const pending=new Set<number>(); const uncertain=new Map<number,'register'|'add-partner'|'proposal'>();
++  function account() { if (!playerId || version!==transport.sessionVersion()) throw new AuthError('CANCELLED'); }
++  async function load(eventId:number):Promise<PairSnapshot> {
++    account(); if(!id(eventId)) throw new AuthError('UNAVAILABLE');
++    const [event,raw]=await Promise.all([transport.details(eventId),transport.pairOwn(eventId)]); account();
++    if(event.id!==eventId) throw new AuthError('UNAVAILABLE'); return { event, own:parseOwn(raw) };
++  }
++  async function search(eventId:number,q:string) { account(); if(q.trim().length<2)return [];
++    const rows=parsePartners(await transport.searchPartners(eventId,q.trim())); account(); return rows.filter(p=>p.id!==playerId); }
++  async function candidates(eventId:number) { account(); const rows=parseCandidates(await transport.pairCandidates(eventId)); account(); return rows.filter(p=>p.playerId!==playerId); }
++  function guard(s:PairSnapshot) {
++    if(!isPairEvent(s.event)) throw new PairError('NOT_PAIR',s);
++    if(!s.event.registrationOpen||s.event.status!=='REGISTRO_ABIERTO'||Date.parse(s.event.startsAt)<=Date.now()) throw new PairError('CLOSED',s);
++  }
++  async function mutate(eventId:number,action:'register'|'add-partner'|'proposal',write:()=>Promise<unknown>,allowed:string[]):Promise<PairReceipt> {
++    account();
++    try {
++      const raw=await write(); account();
++      if(!rec(raw)||raw.success!==true||action!=='proposal'&&!allowed.includes(str(raw.status))) throw new Error('Unknown result');
++      if(raw.waitlistPosition!=null&&!id(raw.waitlistPosition)) throw new Error('Unknown position');
++      return { status:action==='proposal'?'PROPOSAL_SENT':str(raw.status), waitlistPosition:raw.waitlistPosition as number|null ?? null };
++    }catch(e) { account(); if(e instanceof PlayerRequestError||e instanceof AuthError&&['RATE_LIMIT','FORBIDDEN'].includes(e.code))throw e;
++      uncertain.set(eventId,action); throw new PairError('UNCERTAIN'); }
++  }
++  async function exclusive<T>(eventId:number,fn:()=>Promise<T>):Promise<T> {
++    account(); if(pending.has(eventId))throw new PairError('BUSY'); if(uncertain.has(eventId))throw new PairError('UNCERTAIN');
++    pending.add(eventId);try{return await fn();}finally{pending.delete(eventId);}
++  }
++  return { load,search,candidates,
++    async reconcile(eventId:number) {
++      const snapshot=await load(eventId); const action=uncertain.get(eventId);
++      if(action==='register'&&snapshot.own.registered || action==='add-partner'&&snapshot.own.isDouble&&snapshot.own.partnerId)uncertain.delete(eventId);
++      return { snapshot, uncertain:uncertain.has(eventId) };
++    },
++    async submit(eventId:number,quote:string,mode:PairMode,partner:Partner,shareContacts:boolean,adding=false) {
++      return exclusive(eventId,async()=>{
++        const s=await load(eventId); guard(s);
++        if(pairQuote(s)!==quote)throw new PairError('CHANGED',s);
++        if(adding?!canAddPartner(s.own):s.own.registered)throw new PairError('EXISTING',s);
++        if(adding&&mode!=='WITH_PARTNER')throw new PairError('UNAVAILABLE');
++        if(mode==='WITH_PARTNER') {
++          if(!validPartner(partner)||partner.id===playerId)throw new PairError('INVALID_PARTNER',s);
++          if(partner.id) { const matches=await search(eventId,partner.first); if(!matches.some(p=>p.id===partner.id)) {
++              const byLast=await search(eventId,partner.last); if(!byLast.some(p=>p.id===partner.id))throw new PairError('PARTNER_UNAVAILABLE',s);
++            } }
++          else {
++            if (transport.contactStatus) {
++              const contact=await transport.contactStatus(); account(); if(!rec(contact))throw new AuthError('UNAVAILABLE');
++              const samePhone=digits(str(contact.telefono)).length>=8&&digits(str(contact.telefono))===digits(partner.phone);
++              const tg=(v:string)=>v.trim().replace(/^@/,'').toLowerCase();
++              if(samePhone||partner.telegram.trim()&&tg(str(contact.telegramUsername))===tg(partner.telegram))throw new PairError('INVALID_PARTNER',s);
++            }
++            const matches=[...await search(eventId,partner.phone),...(partner.telegram.trim()?await search(eventId,partner.telegram):[])];
++            const unique=[...new Map(matches.map(p=>[p.id,p])).values()]; if(unique.length)throw new PairError('MATCH_REQUIRED',s,unique);
++          }
++          account();
++          const body=partner.id?{nombre:partner.first.trim(),apellido:partner.last.trim(),existingUserId:partner.id,isExistingUser:true}:
++            {nombre:partner.first.trim(),apellido:partner.last.trim(),telefono:partner.phone.trim(),telegramUsername:partner.telegram.trim()||null,isExistingUser:false};
++          return mutate(eventId,adding?'add-partner':'register',()=>transport.pairWrite(eventId,adding?'add-partner':'register',body),['CONFIRMED','WAITLIST']);
++        }
++        return mutate(eventId,'register',()=>transport.pairWrite(eventId,'register-solo',{soloType:mode,shareContacts:mode==='SEARCH'&&shareContacts}),mode==='SEARCH'?['SOLO_SEARCH']:['SOLO_ADD_LATER','WAITLIST']);
++      });
++    },
++    async propose(eventId:number,quote:string,targetId:number) {
++      return exclusive(eventId,async()=>{const s=await load(eventId);guard(s);
++        if(pairQuote(s)!==quote)throw new PairError('CHANGED',s);
++        if(!canProposePair(s.own))throw new PairError('EXISTING',s);
++        if(!(await candidates(eventId)).some(p=>p.id===targetId))throw new PairError('PARTNER_UNAVAILABLE',s);
++        return mutate(eventId,'proposal',()=>transport.proposePair(eventId,targetId),[]);
++      });
++    },
++  };
++}
+diff --git a/mobile-app/src/pairCopy.ts b/mobile-app/src/pairCopy.ts
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/src/pairCopy.ts
+@@ -0,0 +1,11 @@
++import type { Language } from './schedule';
++const ru = {
++ title:'Парная запись',back:'Назад',loading:'Проверяем мероприятие и вашу заявку…',retry:'Проверить состояние',choose:'Как хотите участвовать?',withPartner:'У меня есть партнёр',searchMode:'Ищу партнёра',laterMode:'Добавлю партнёра позже',partnerTitle:'Кто играет с вами?',lookup:'Найти игрока',manual:'Ввести данные',query:'Имя, фамилия, WhatsApp или Telegram',first:'Имя партнёра',last:'Фамилия партнёра',phone:'WhatsApp · обязательно для нового игрока',telegram:'Telegram · если есть',matches:'Есть совпадения — выберите игрока',noMatches:'Совпадений нет. Можно ввести нового партнёра.',selected:'Игрок выбран',change:'Выбрать другого',continue:'Продолжить',review:'Проверьте заявку',participants:'Ваша пара',newPlayer:'Новый участник · аккаунт не требуется',perPerson:'За человека',perPair:'За двоих',cancelBy:'Самостоятельная отмена до',partnerBy:'Добавить партнёра до',conditions:'Условия мероприятия',noCharge:'Запись не списывает деньги.',confirmText:'Нажимая кнопку, вы подтверждаете заявку и принимаете условия мероприятия.',register:'Записать пару',submitSolo:'Подать заявку',add:'Добавить партнёра',busy:'Отправляем…',shareContacts:'Показывать мои WhatsApp и Telegram в списке поиска',shareHint:'Необязательно. По умолчанию контакты скрыты.',searchHint:'Это заявка на поиск. Готовая пара появится после принятого предложения.',laterHint:'Без партнёра заявка остаётся незавершённой. После срока она переходит в резерв; добавить партнёра можно позже.',result:'Ваша заявка',CONFIRMED:'Пара в составе',WAITLIST:'Резерв',WAITLIST_INVITED:'Подтвердите место на сайте',PARTNER_INVITED:'Партнёру нужно завершить регистрацию на сайте',PAIR_REGISTERED:'Пара зарегистрирована',SOLO_SEARCH:'Ищете партнёра',SOLO_ADD_LATER:'Добавьте партнёра',SOLO_EXPIRED:'Проверьте заявку на сайте',PROPOSAL_SENT:'Предложение отправлено — ждём ответ',queue:'Позиция в очереди',myEvents:'Мои мероприятия',manage:'Моя пара',candidates:'Посмотреть игроков',propose:'Предложить пару',proposal:'Игрок получит предложение по почте. До его принятия готовая пара не подтверждена.',sendProposal:'Отправить предложение',emptyCandidates:'Сейчас других игроков в поиске нет.',hidden:'Контакты скрыты',shareWhatsApp:'Поделиться в WhatsApp',shareTelegram:'Поделиться в Telegram',shareHintDone:'Ссылка на приложение не требует повторного подтверждения участия.',unavailable:'Не удалось проверить данные. Повторите проверку.',changed:'Данные или статус заявки изменились. Проверьте обновлённые условия.',closed:'Запись на мероприятие закрыта.',existing:'Ваша заявка уже существует. Проверьте её состояние.',invalid:'Проверьте имя, фамилию, WhatsApp и Telegram партнёра.',unavailablePartner:'Игрок уже недоступен для этой пары. Выберите другого.',matchRequired:'Найдены игроки с такими контактами. Выберите существующего игрока, чтобы избежать дубля.',uncertain:'Ответ сайта не получен. Запрос мог выполниться. Повторно он не отправится — проверьте состояние.',stillUncertain:'Результат ещё не подтверждён. Проверьте позже или откройте сайт.',needLevel:'Заполните уровень в профиле сайта, затем вернитесь проверить заявку.',profile:'Профиль сайта',site:'Открыть на сайте',demo:'Тестовый транспорт · реальные заявки и письма не отправляются',noAutomatic:'Вы сами отправляете сообщение из мессенджера.',
++};
++const es:Record<keyof typeof ru,string>={
++ title:'Inscripción en pareja',back:'Volver',loading:'Revisando el evento y tu inscripción…',retry:'Comprobar estado',choose:'¿Cómo querés participar?',withPartner:'Tengo compañero',searchMode:'Busco compañero',laterMode:'Agrego compañero después',partnerTitle:'¿Quién juega con vos?',lookup:'Buscar jugador',manual:'Ingresar datos',query:'Nombre, apellido, WhatsApp o Telegram',first:'Nombre del compañero',last:'Apellido del compañero',phone:'WhatsApp · obligatorio para un jugador nuevo',telegram:'Telegram · opcional',matches:'Hay coincidencias: elegí al jugador',noMatches:'Sin coincidencias. Podés ingresar un jugador nuevo.',selected:'Jugador seleccionado',change:'Elegir otro',continue:'Continuar',review:'Revisá la solicitud',participants:'Tu pareja',newPlayer:'Jugador nuevo · no necesita cuenta',perPerson:'Por persona',perPair:'Por pareja',cancelBy:'Podés cancelar por tu cuenta hasta',partnerBy:'Agregá compañero antes de',conditions:'Condiciones del evento',noCharge:'La inscripción no realiza ningún cobro.',confirmText:'Al tocar el botón confirmás la solicitud y aceptás las condiciones del evento.',register:'Inscribir pareja',submitSolo:'Enviar solicitud',add:'Agregar compañero',busy:'Enviando…',shareContacts:'Mostrar mi WhatsApp y Telegram en la lista de búsqueda',shareHint:'Opcional. Los contactos están ocultos por defecto.',searchHint:'Es una solicitud de búsqueda. La pareja estará formada cuando se acepte una propuesta.',laterHint:'Sin compañero, la inscripción queda incompleta. Después del plazo pasa a reserva; podés agregarlo más tarde.',result:'Tu inscripción',CONFIRMED:'Pareja confirmada',WAITLIST:'Reserva',WAITLIST_INVITED:'Confirmá el lugar en la web',PARTNER_INVITED:'Tu compañero debe completar su inscripción en la web',PAIR_REGISTERED:'Pareja registrada',SOLO_SEARCH:'Buscando compañero',SOLO_ADD_LATER:'Agregá compañero',SOLO_EXPIRED:'Revisá la solicitud en la web',PROPOSAL_SENT:'Propuesta enviada: esperando respuesta',queue:'Posición en espera',myEvents:'Mis eventos',manage:'Mi pareja',candidates:'Ver jugadores',propose:'Proponer pareja',proposal:'El jugador recibirá la propuesta por email. La pareja no se confirma hasta que la acepte.',sendProposal:'Enviar propuesta',emptyCandidates:'No hay otros jugadores buscando compañero.',hidden:'Contactos ocultos',shareWhatsApp:'Compartir por WhatsApp',shareTelegram:'Compartir por Telegram',shareHintDone:'El enlace no requiere volver a confirmar la participación.',unavailable:'No pudimos comprobar los datos. Intentá de nuevo.',changed:'Cambiaron los datos o el estado. Revisá las condiciones actualizadas.',closed:'La inscripción está cerrada.',existing:'Tu inscripción ya existe. Revisá su estado.',invalid:'Revisá nombre, apellido, WhatsApp y Telegram.',unavailablePartner:'El jugador ya no está disponible para esta pareja. Elegí otro.',matchRequired:'Hay jugadores con esos contactos. Elegí uno existente para evitar duplicados.',uncertain:'No recibimos la respuesta. La solicitud pudo completarse. No se reenviará: comprobá el estado.',stillUncertain:'El resultado sigue sin confirmarse. Comprobá más tarde o abrí la web.',needLevel:'Completá tu nivel en el perfil de la web y volvé a comprobar.',profile:'Perfil de la web',site:'Abrir en la web',demo:'Transporte de prueba · no se envían inscripciones ni emails reales',noAutomatic:'Vos enviás el mensaje desde la aplicación de mensajería.',
++};
++const en:Record<keyof typeof ru,string>={
++ title:'Pair registration',back:'Back',loading:'Checking the event and your registration…',retry:'Check status',choose:'How would you like to join?',withPartner:'I have a partner',searchMode:'Find a partner',laterMode:'Add partner later',partnerTitle:'Who is playing with you?',lookup:'Find player',manual:'Enter details',query:'First name, last name, WhatsApp or Telegram',first:'Partner first name',last:'Partner last name',phone:'WhatsApp · required for a new player',telegram:'Telegram · optional',matches:'Matches found: choose the player',noMatches:'No matches. You can enter a new player.',selected:'Player selected',change:'Choose another',continue:'Continue',review:'Review your request',participants:'Your pair',newPlayer:'New participant · no account required',perPerson:'Per person',perPair:'Per pair',cancelBy:'Self-service cancellation until',partnerBy:'Add a partner by',conditions:'Event terms',noCharge:'Registration does not charge your account.',confirmText:'By pressing the button you confirm the request and accept the event terms.',register:'Register pair',submitSolo:'Submit request',add:'Add partner',busy:'Sending…',shareContacts:'Show my WhatsApp and Telegram in the partner search list',shareHint:'Optional. Contacts are hidden by default.',searchHint:'This is a partner search request. A pair is formed once a proposal is accepted.',laterHint:'Your registration is incomplete without a partner. After the deadline it moves to reserve; you can still add a partner later.',result:'Your registration',CONFIRMED:'Pair confirmed',WAITLIST:'Reserve',WAITLIST_INVITED:'Confirm your spot on the website',PARTNER_INVITED:'Your partner must complete registration on the website',PAIR_REGISTERED:'Pair registered',SOLO_SEARCH:'Looking for a partner',SOLO_ADD_LATER:'Add your partner',SOLO_EXPIRED:'Check your request on the website',PROPOSAL_SENT:'Proposal sent: waiting for a response',queue:'Waitlist position',myEvents:'My events',manage:'My pair',candidates:'View players',propose:'Propose a pair',proposal:'The player will receive the proposal by email. The pair is not confirmed until they accept.',sendProposal:'Send proposal',emptyCandidates:'No other players are looking for a partner.',hidden:'Contacts hidden',shareWhatsApp:'Share via WhatsApp',shareTelegram:'Share via Telegram',shareHintDone:'The app link does not require participation to be confirmed again.',unavailable:'Could not check the information. Please try again.',changed:'The information or registration status changed. Review the updated terms.',closed:'Registration is closed.',existing:'Your registration already exists. Check its status.',invalid:'Check the partner name, WhatsApp and Telegram.',unavailablePartner:'The player is no longer available for this pair. Choose another.',matchRequired:'Players with these contacts exist. Choose an existing player to avoid duplicates.',uncertain:'The website response did not arrive. The request may have completed. It will not be resent; check its status.',stillUncertain:'The result is still unknown. Check later or open the website.',needLevel:'Set your level in the website profile, then return and check again.',profile:'Website profile',site:'Open website',demo:'Test transport · no real registrations or emails are sent',noAutomatic:'You send the message yourself from the messaging app.',
++};
++export const pairCopy:Record<Language,Record<keyof typeof ru,string>>={ru,es,en};
+diff --git a/mobile-app/src/sharedEvent.ts b/mobile-app/src/sharedEvent.ts
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/src/sharedEvent.ts
+@@ -0,0 +1,3 @@
++export function readSharedEventId(search:string):number|null {
++ try{const v=new URLSearchParams(search).get('event');if(!v||!/^\d+$/.test(v))return null;const n=Number(v);return Number.isSafeInteger(n)&&n>0?n:null;}catch{return null;}
++}
+diff --git a/mobile-app/tests/authMutations.test.mjs b/mobile-app/tests/authMutations.test.mjs
+--- a/mobile-app/tests/authMutations.test.mjs
++++ b/mobile-app/tests/authMutations.test.mjs
+@@ -57,3 +57,10 @@
+   await f.client.saveContact({ telegramUsername: '@test_person' }); const call = f.calls.at(-1);
+   assert.equal(call.init.method, 'PATCH'); assert.equal(call.init.credentials, 'omit'); assert.deepEqual(JSON.parse(call.init.body), { telegramUsername: '@test_person' });
+ });
++test('pair endpoints use own Bearer session, JSON body and no website cookies; partner search encodes Telegram',async()=>{
++ const f=fixture(()=>json({success:true,status:'CONFIRMED'}));await f.client.login(player.email,'test-only-password');
++ await f.client.searchPartners(42,'@alex + test');assert.match(f.calls.at(-1).url,/query=%40alex\+%2B\+test/);assert.equal(f.calls.at(-1).init.credentials,'omit');
++ await f.client.pairWrite(42,'register',{nombre:'A',apellido:'B',telefono:'+54 91100000123'});const call=f.calls.at(-1);
++ assert.equal(call.url,'https://1-padel.com/api/tournaments/double/42/register');assert.equal(call.init.headers.Authorization,'Bearer test-access');assert.equal(call.init.method,'POST');assert.equal(call.init.credentials,'omit');assert.equal('playerId'in JSON.parse(call.init.body),false);
++ for(const status of [401,403]){const g=fixture(()=>json({},status));await g.client.login(player.email,'test-only-password');await assert.rejects(g.client.pairWrite(42,'register',{}));assert.equal(g.calls.filter(c=>c.url.endsWith('/double/42/register')).length,1);}
++});
+diff --git a/mobile-app/tests/pairBooking.test.mjs b/mobile-app/tests/pairBooking.test.mjs
+new file mode 100644
+--- /dev/null
++++ b/mobile-app/tests/pairBooking.test.mjs
+@@ -0,0 +1,93 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import {AuthError,PlayerRequestError} from '../src/auth.ts';
++import {createPairBooking,pairQuote,parseOwn,parsePartners,parseCandidates,canAddPartner,validPartner} from '../src/pairBooking.ts';
++import {readSharedEventId} from '../src/sharedEvent.ts';
++import {pairCopy} from '../src/pairCopy.ts';
++function fixture(){
++ const event={id:42,name:'Test pair',type:'AMERICANO_TEAMS',modality:'DOBLES',gender:'MASCULINO',level:'C9',status:'REGISTRO_ABIERTO',registrationOpen:true,startsAt:new Date(Date.now()+4*86400000).toISOString(),timeZone:'America/Argentina/Buenos_Aires',club:{id:1,name:'Test'},price:30000,currency:'ARS',available:1,cancellationDeadline:null,description:null};
++ const state={event,own:{registered:false},writes:[],search:[],candidates:[],version:1,result:{success:true,status:'CONFIRMED'}};
++ const transport={sessionVersion:()=>state.version,details:async()=>({...state.event}),pairOwn:async()=>({...state.own}),searchPartners:async()=>state.search,pairCandidates:async()=>state.candidates,pairWrite:async(id,action,body)=>{state.writes.push({id,action,body});return state.result;},proposePair:async()=>{state.writes.push({proposal:true});return {success:true};}};
++ const partner={first:'New',last:'Partner',phone:'+54 9 11 0000 0999',telegram:''};
++ const own=(status='SOLO_ADD_LATER',isDouble=false)=>({registered:true,registrationId:17,status,isDoubleRegistration:isDouble,partnerId:isDouble?20:null,partnerFirstName:isDouble?'Alex':null,partnerLastName:isDouble?'Test':null,waitlistPosition:status==='WAITLIST'?2:null,registrationDate:'2026-10-22T09:00:00'});
++ return {state,transport,gateway:createPairBooking(transport,4),partner,own};
++}
++async function quoted(f){return pairQuote(await f.gateway.load(42));}
++test('opening and reading are mutation-free; new partner without email can register a real pair payload',async()=>{
++ const f=fixture();const q=await quoted(f);assert.equal(f.state.writes.length,0);
++ const receipt=await f.gateway.submit(42,q,'WITH_PARTNER',f.partner,false);
++ assert.equal(receipt.status,'CONFIRMED');assert.equal(f.state.writes.length,1);
++ assert.equal(f.state.writes[0].action,'register');assert.equal('email' in f.state.writes[0].body,false);assert.equal('playerId' in f.state.writes[0].body,false);
++});
++test('queue status comes from the server and solo reservation is not confused with a formed pair',async()=>{
++ for(const [mode,status]of [['WITH_PARTNER','WAITLIST'],['SEARCH','SOLO_SEARCH'],['ADD_LATER','WAITLIST']]){
++  const f=fixture();f.state.result={success:true,status,waitlistPosition:status==='WAITLIST'?3:null};
++  const receipt=await f.gateway.submit(42,await quoted(f),mode,f.partner,true);assert.equal(receipt.status,status);
++  if(mode!=='WITH_PARTNER')assert.deepEqual(f.state.writes[0].body,{soloType:mode,shareContacts:mode==='SEARCH'});
++ }
++ assert.equal(canAddPartner(parseOwn(fixture().own('WAITLIST',false))),true);
++ assert.equal(canAddPartner(parseOwn(fixture().own('WAITLIST',true))),false);
++});
++test('ambiguous contacts require explicit selection; no duplicate guest is registered',async()=>{
++ const f=fixture();f.state.search=[{id:20,nombre:'Alex',apellido:'One'},{id:21,nombre:'Alex',apellido:'Two'}];
++ await assert.rejects(f.gateway.submit(42,await quoted(f),'WITH_PARTNER',f.partner,false),e=>e.code==='MATCH_REQUIRED'&&e.matches.length===2);
++ assert.equal(f.state.writes.length,0);
++});
++test('selected existing partner uses ID and names without overwriting their contacts',async()=>{
++ const f=fixture();f.state.search=[{id:20,nombre:'Alex',apellido:'Test',telefono:'+54 9 11 0000 0123',email:'private@example.test'}];
++ const partners=await f.gateway.search(42,'Alex');assert.equal('email'in partners[0],false);
++ await f.gateway.submit(42,await quoted(f),'WITH_PARTNER',partners[0],false);
++ assert.deepEqual(f.state.writes[0].body,{nombre:'Alex',apellido:'Test',existingUserId:20,isExistingUser:true});
++});
++test('self, missing phone, individual events, closed or started event never send a pair registration',async()=>{
++ for(const change of [{modality:'INDIVIDUAL'},{registrationOpen:false},{startsAt:new Date(Date.now()-1000).toISOString()}]){
++  const f=fixture();Object.assign(f.state.event,change);await assert.rejects(f.gateway.submit(42,await quoted(f),'WITH_PARTNER',f.partner,false));assert.equal(f.state.writes.length,0);
++ }
++ const f=fixture();assert.equal(validPartner({...f.partner,phone:''}),false);
++ await assert.rejects(f.gateway.submit(42,await quoted(f),'WITH_PARTNER',{...f.partner,id:4},false));assert.equal(f.state.writes.length,0);
++});
++test('changed conditions or newly created own request require another review, zero POST',async()=>{
++ for(const change of [{price:32000},{available:0}]){const f=fixture();const q=await quoted(f);Object.assign(f.state.event,change);
++ await assert.rejects(f.gateway.submit(42,q,'WITH_PARTNER',f.partner,false),{code:'CHANGED'});assert.equal(f.state.writes.length,0);}
++ const f=fixture();const q=await quoted(f);f.state.own=f.own();await assert.rejects(f.gateway.submit(42,q,'WITH_PARTNER',f.partner,false),{code:'CHANGED'});
++});
++test('add partner edits an existing eligible solo request and preserves reserve status from server',async()=>{
++ const f=fixture();f.state.own=f.own('WAITLIST');f.state.result={success:true,status:'WAITLIST'};
++ await f.gateway.submit(42,await quoted(f),'WITH_PARTNER',f.partner,false,true);assert.equal(f.state.writes[0].action,'add-partner');
++ f.state.own=f.own('WAITLIST',true);await assert.rejects(f.gateway.submit(42,await quoted(f),'WITH_PARTNER',f.partner,false,true),{code:'EXISTING'});
++});
++test('double taps send one write; switching account during preflight sends none',async()=>{
++ const f=fixture();let reply;f.transport.pairWrite=()=>{f.state.writes.push({});return new Promise(resolve=>{reply=resolve;});};const g=createPairBooking(f.transport,4);const q=pairQuote(await g.load(42));
++ const first=g.submit(42,q,'WITH_PARTNER',f.partner,false);await assert.rejects(g.submit(42,q,'WITH_PARTNER',f.partner,false),{code:'BUSY'});
++ await new Promise(resolve=>setImmediate(resolve));reply({success:true,status:'CONFIRMED'});await first;assert.equal(f.state.writes.length,1);
++ const h=fixture();let finish;h.transport.details=()=>new Promise(resolve=>{finish=resolve;});const gh=createPairBooking(h.transport,4);const p=gh.load(42);h.state.version++;finish(h.state.event);await assert.rejects(p,{code:'CANCELLED'});
++});
++test('lost response and 401 renewal cannot replay POST; active solo before a lost add is not proof of completion',async()=>{
++ const f=fixture();f.state.own=f.own();f.transport.pairWrite=async()=>{f.state.writes.push({});throw new AuthError('REVIEW_REQUIRED');};const g=createPairBooking(f.transport,4);const q=pairQuote(await g.load(42));
++ await assert.rejects(g.submit(42,q,'WITH_PARTNER',f.partner,false,true),{code:'UNCERTAIN'});
++ assert.equal((await g.reconcile(42)).uncertain,true);await assert.rejects(g.submit(42,q,'WITH_PARTNER',f.partner,false,true),{code:'UNCERTAIN'});
++ f.state.own=f.own('CONFIRMED',true);assert.equal((await g.reconcile(42)).uncertain,false);assert.equal(f.state.writes.length,1);
++});
++test('backend rejection preserves needLevel; unknown success/status never invents confirmed pair',async()=>{
++ const f=fixture();f.transport.pairWrite=async()=>{throw new PlayerRequestError({needLevel:true,message:'level'});};const g=createPairBooking(f.transport,4);
++ await assert.rejects(g.submit(42,pairQuote(await g.load(42)),'WITH_PARTNER',f.partner,false),e=>e.needLevel);
++ for(const result of [{success:true,status:'PARTNER_INVITED'},{success:'true',status:'CONFIRMED'},{}]){const h=fixture();h.state.result=result;await assert.rejects(h.gateway.submit(42,await quoted(h),'WITH_PARTNER',h.partner,false),{code:'UNCERTAIN'});}
++});
++test('proposal requires own solo and a currently available target; does not return a confirmed pair',async()=>{
++ const f=fixture();f.state.own=f.own('SOLO_SEARCH');f.state.candidates=[{registrationId:25,playerId:20,playerName:'Candidate',shareContacts:false,telefono:'private',telegramUsername:'private'}];
++ const candidates=await f.gateway.candidates(42);assert.equal(candidates[0].phone,null);assert.equal(candidates[0].telegram,null);
++ assert.equal((await f.gateway.propose(42,await quoted(f),25)).status,'PROPOSAL_SENT');
++ f.state.candidates=[];await assert.rejects(f.gateway.propose(42,await quoted(f),25),{code:'PARTNER_UNAVAILABLE'});
++});
++test('malformed own contract fails closed; event link opens only details, no stored intent or automatic signup',async()=>{
++ assert.throws(()=>parseOwn({registered:true,status:'WAITLIST'}));
++ assert.throws(()=>parsePartners({}));assert.throws(()=>parseCandidates([{}]));
++ assert.equal(readSharedEventId('?event=42'),42);for(const query of ['?event=-1','?event=NaN','?event=9007199254740992','?event=1x'])assert.equal(readSharedEventId(query),null);
++ assert.deepEqual(Object.keys(pairCopy.ru).sort(),Object.keys(pairCopy.es).sort());assert.deepEqual(Object.keys(pairCopy.ru).sort(),Object.keys(pairCopy.en).sort());
++});
++test('own WhatsApp in another formatting or own Telegram cannot create a guest partner for self',async()=>{
++ for(const contact of [{telefono:'+54 (9) 11 0000-0999'},{telegramUsername:'@SELF_USER'}]){
++  const f=fixture();f.transport.contactStatus=async()=>contact;const g=createPairBooking(f.transport,4);
++  await assert.rejects(g.submit(42,pairQuote(await g.load(42)),'WITH_PARTNER',{...f.partner,telegram:'@self_user'},false),{code:'INVALID_PARTNER'});assert.equal(f.state.writes.length,0);
++ }
++});
+diff --git a/src/main/java/com/padle/core/padelcoreservice/controller/player/PlayerDashboardController.java b/src/main/java/com/padle/core/padelcoreservice/controller/player/PlayerDashboardController.java
+--- a/src/main/java/com/padle/core/padelcoreservice/controller/player/PlayerDashboardController.java
++++ b/src/main/java/com/padle/core/padelcoreservice/controller/player/PlayerDashboardController.java
+@@ -372,6 +372,13 @@
+         response.put("partnerFirstName", registration.get().getPartnerNombre());
+         response.put("partnerLastName", registration.get().getPartnerApellido());
+         response.put("hasRegisteredPartner", registration.get().getPartnerId() != null);
++        // Собственная активная заявка: безопасный снимок для мобильного парного сценария.
++        // Не возвращаем токены приглашений, email или контакты другого игрока.
++        response.put("registrationId", registration.get().getId());
++        response.put("status", registration.get().getStatus());
++        response.put("waitlistPosition", registration.get().getWaitlistPosition());
++        response.put("registrationDate", registration.get().getRegistrationDate());
++        response.put("isDoubleRegistration", Boolean.TRUE.equals(registration.get().getIsDoubleRegistration()));
+ 
+         return ResponseEntity.ok(response);
+     }
+diff --git a/src/test/java/com/padle/core/padelcoreservice/controller/player/PlayerOwnPairSnapshotTest.java b/src/test/java/com/padle/core/padelcoreservice/controller/player/PlayerOwnPairSnapshotTest.java
+new file mode 100644
+--- /dev/null
++++ b/src/test/java/com/padle/core/padelcoreservice/controller/player/PlayerOwnPairSnapshotTest.java
+@@ -0,0 +1,48 @@
++package com.padle.core.padelcoreservice.controller.player;
++
++import com.fasterxml.jackson.databind.ObjectMapper;
++import com.padle.core.padelcoreservice.dto.TournamentRegistrationDto;
++import com.padle.core.padelcoreservice.model.PlayerPadel;
++import com.padle.core.padelcoreservice.model.Owner;
++import com.padle.core.padelcoreservice.model.enums.RegistrationStatus;
++import com.padle.core.padelcoreservice.repository.PlayerRepository;
++import com.padle.core.padelcoreservice.service.DoubleTournamentRegistrationService;
++import com.padle.core.padelcoreservice.service.TournamentService;
++import org.junit.jupiter.api.Test;
++import java.util.Map;
++import java.util.Optional;
++import static org.junit.jupiter.api.Assertions.*;
++import static org.mockito.Mockito.*;
++
++class PlayerOwnPairSnapshotTest {
++    private final TournamentService service = mock(TournamentService.class);
++    private final PlayerDashboardController controller = new PlayerDashboardController(
++            service, new ObjectMapper(), mock(DoubleTournamentRegistrationService.class), mock(PlayerRepository.class));
++
++    @Test void ownSnapshotUsesPrincipalAndDoesNotExposeInvitationTokensOrContacts() {
++        PlayerPadel actor = PlayerPadel.builder().id(4L).build();
++        TournamentRegistrationDto row = new TournamentRegistrationDto();
++        row.setId(123L); row.setStatus(RegistrationStatus.WAITLIST); row.setWaitlistPosition(2);
++        row.setIsDoubleRegistration(false); row.setPartnerRegistrationToken("must-not-leak");
++        row.setPartnerEmail("must-not-leak@example.test"); row.setPartnerPhone("must-not-leak");
++        when(service.getRegistration(42L, 4L)).thenReturn(Optional.of(row));
++        var response = controller.getMyRegistration(42L, actor);
++        Map<?, ?> body = (Map<?, ?>) response.getBody();
++        assertEquals(200, response.getStatusCode().value()); assertNotNull(body);
++        assertEquals(true, body.get("registered")); assertEquals(123L, body.get("registrationId"));
++        assertEquals(RegistrationStatus.WAITLIST, body.get("status"));
++        assertEquals(false, body.get("isDoubleRegistration"));
++        assertFalse(body.containsKey("partnerRegistrationToken")); assertFalse(body.containsKey("partnerEmail"));
++        assertFalse(body.containsKey("partnerPhone"));
++        verify(service).getRegistration(42L, 4L);
++    }
++    @Test void missingActiveRegistrationIsNotAnInventedWaitlistOrPair() {
++        when(service.getRegistration(42L, 4L)).thenReturn(Optional.empty());
++        var response = controller.getMyRegistration(42L, PlayerPadel.builder().id(4L).build());
++        assertEquals(Map.of("registered", false), response.getBody());
++    }
++    @Test void organizerCannotReadPlayerSnapshotThroughThisHandler() {
++        var response = controller.getMyRegistration(42L, new Owner());
++        assertEquals(400, response.getStatusCode().value()); verifyNoInteractions(service);
++    }
++}
+diff --git a/docs/mobile-pair-booking.md b/docs/mobile-pair-booking.md
+new file mode 100644
+--- /dev/null
++++ b/docs/mobile-pair-booking.md
+@@ -0,0 +1,96 @@
++# 1Padel.App — настоящая парная запись внутри /app/
++
++Подготовлено 22.10.2026 поверх UstinKO/padel-core-service master `df81c33e3f4afb5aef3877e746d4977a7c252a9c` (после PR701).
++Цель: действующий клиент https://1-padel.com/app/, а не новое приложение и не отдельная демонстрация.
++
++## Задание и согласованные требования
++
++1. Для DOBLES + AMERICANO_TEAMS (и legacy AMERICANO + DOBLES) заменить переход «Записаться на сайте» внутренним сценарием. Остальные форматы не расширять без проверки их правил.
++2. Три варианта: «У меня есть партнёр», «Ищу партнёра», «Добавлю партнёра позже».
++3. Искать в общей базе игроков сайта и приложения по имени, фамилии, телефону WhatsApp и Telegram. Подсказки при вводе любого из четырёх полей. При совпадении игрок выбирается явно, одно имя не означает совпадение личности. Исключать себя и уже занятых участников по правилам сервера.
++4. Для нового партнёра нужны имя, фамилия и WhatsApp; Telegram необязателен. Почту не спрашивать и не требовать. Если контакты совпали с существующим игроком, сначала предложить выбрать его, не создавать дубликат. Выбранного существующего игрока передавать по ID, не менять его контакты.
++5. Готовая пара, включая нового гостя, регистрируется сразу без подтверждения по email партнёра. Статус CONFIRMED или WAITLIST и позиция очереди только из ответа сервера. Не обещать место при заполненном событии.
++6. Перед отправкой отдельный экран проверки: оба участника, событие, дата/клуб, стоимость за человека и двоих, фактический срок отмены. Без дополнительного чекбокса регистрации: текст условий и явная кнопка «Записать пару». Запись не списывает деньги.
++7. Для SEARCH сохранить отдельное необязательное согласие на показ собственных контактов, по умолчанию выключено. Список ищущих партнёра и отправка предложения используют существующие серверные правила. Отправленное предложение не является подтверждённой парой. Принятие предложения и парная отмена пока через сайт.
++8. Для ADD_LATER показать фактическое серверное правило: добавить до начала минус 24 часа. После срока одиночная заявка переходит в резерв; добавление партнёра в такой резерв разрешено, готовая пара занимает место по существующей очереди. Не приравнивать этот срок к изменяемому дедлайну отмены.
++9. После готовой пары — отдельные кнопки поделиться в WhatsApp/Telegram со ссылкой `/app/?event=ID`. Пользователь сам отправляет сообщение в мессенджере. Автоматическую доставку WhatsApp/Telegram не реализовывать и не обещать; регистрация от доставки не зависит. Ссылка только открывает детали события, не записывает автоматически.
++10. После операции обновлять «Мои мероприятия»; для будущих парных событий дать кнопку «Моя пара» для проверки статуса/добавления партнёра.
++11. RU/ES/EN; телефонный экран, прокрутка подсказок, экранная клавиатура, закреплённая кнопка.
++12. Сохранить Google/email-вход, восстановление сессии и существующие индивидуальные запись/отмену.
++
++## Что уже есть на сервере и используется
++
++В текущем master уже есть поиск нормализованного телефона/Telegram и регистрация гостевого партнёра без email с немедленным формированием пары. Это не нужно реализовывать повторно.
++
++Использованы существующие защищённые маршруты:
++
++- GET `/api/players/search?query=...&tournamentId=...`;
++- GET `/players/tournaments/{id}/my-registration`;
++- GET `/api/tournaments/double/{id}/looking-for-partner`;
++- POST `/api/tournaments/double/{id}/register`;
++- POST `/api/tournaments/double/{id}/register-solo`;
++- POST `/api/tournaments/double/{id}/add-partner`;
++- POST `/api/tournaments/double/{id}/propose-pair/{registrationId}`.
++
++Поиск/запись используют текущую авторизацию. Не делать поиск игроков или собственные данные публичными.
++
++## Единственное серверное дополнение в патче
++
++В существующий GET собственной активной регистрации добавить поля:
++`registrationId`, `status`, `waitlistPosition`, `registrationDate`, `isDoubleRegistration`.
++Существующие `registered`, `partnerId`, `partnerFirstName`, `partnerLastName`, `hasRegisteredPartner` сохраняются.
++Идентичность берётся из principal, а не тела клиента. При отсутствии активной записи `{registered:false}`.
++Не возвращать токены приглашения, email или телефон партнёра. Изменений БД и серверной политики записи нет.
++Клиент требует расширенный контракт и при его отсутствии показывает ошибку проверки, без выдуманного статуса.
++
++## Защита от случайной повторной операции
++
++Перед записью/добавлением/предложением перечитываются событие и собственная запись; изменения условий требуют повторной проверки. Смена аккаунта отменяет старый сценарий. Двойное нажатие блокируется.
++При потерянном ответе, неожиданном статусе или обновлении токена после 401 POST не переигрывается: только GET проверки состояния. Старая одиночная заявка сама по себе не доказывает успешное добавление партнёра. Неизвестный результат предложения не объявляется успехом.
++
++Ограничения: локальная блокировка неопределённого результата действует в текущем экземпляре клиента, это не серверная idempotency. Между GET проверки и POST остаётся обычное окно конкурентных изменений, окончательное решение за существующей транзакцией сервера. Повторный поиск выбранного партнёра ограничен серверными 15 результатами и может консервативно попросить выбрать другого при распространённых именах. Эти ограничения не обходить отключением серверных проверок.
++
++## Файлы и применение
++
++`pair-registration.patch` содержит исходники и тесты, без node_modules и скомпилированных файлов. Это проверяемая реализация на указанную базу; изучить и адаптировать к текущему master согласно обычным правилам репозитория. Не требуется слепое применение присланного кода: при ограничениях интеграции реализовать требования из этого README самостоятельно.
++
++Ключевые файлы: `mobile-app/src/PairBookingScreen.tsx`, `pairBooking.ts`, `pairCopy.ts`, `BookingEntry.tsx`; маршрутизация `App.js`, `PlayerScreen`, `MyEventsScreen`, `AuthContext`, `auth.ts`; расширение собственного GET в `PlayerDashboardController`; контрактный Java-тест и клиентские тесты.
++
++После ревью:
++
++```sh
++git apply --check pair-registration.patch
++# применить/адаптировать после ревью
++cd mobile-app
++pnpm install --frozen-lockfile
++pnpm typecheck
++pnpm test
++pnpm build:site
++cd ..
++# запустить обязательные серверные проверки и сборку по AGENTS/CLAUDE/CI проекта
++```
++
++Сборка `build:site` обновляет `src/main/resources/static/app/`; обязательно включить актуальную сборку в итоговое обновление сервера. Исходники клиента и расширение GET должны выйти согласованно. Ссылки assets должны работать под `/app/` и `/app/?event=ID`.
++
++## Выполненные проверки локально
++
++- TypeScript: успешно.
++- Клиентские тесты: 78/78 (включая прежние сценарии входа, индивидуальной записи/отмены и новые парные сценарии).
++- Web export для `/app/`: успешно.
++- На ширине iPhone 390px: выбор из совпадений, проверка заявки без галочки, один запрос успешной пары; добавление нового партнёра без почты в резерв; изменённая цена — ноль POST; потерянный ответ — один POST, затем восстановление GET без повтора.
++- Изолированная проверка того же production-компонента: `?screen=pair-booking-check`; она использует только память и не отправляет реальные записи/письма.
++- Java-тест `PlayerOwnPairSnapshotTest`: написан, но НЕ ЗАПУЩЕН (на машине подготовки отсутствуют JDK и Maven cache). Серверную компиляцию/тесты обязательно выполнить в среде репозитория до слияния.
++- Реальные аккаунты, регистрации, предложения и рассылки при подготовке не использовались. Полный авторизованный production E2E ещё не выполнен.
++
++## Обязательные проверки перед публикацией ботом
++
++1. Собрать сервер и запустить все обязательные CI-проверки, включая новый тест безопасного собственного GET.
++2. На тестовом окружении с отдельными игроками проверить existing/new partner без email, поиск по всем четырём полям, совпадающие имена, свой номер/Telegram, занятый партнёр, неверный уровень/пол, повторную запись.
++3. Проверить свободные места/резерв, SEARCH и предложения, ADD_LATER до/после срока, добавление в резерв, закрытое/начавшееся событие, смену аккаунта, 401, обрыв ответа и отсутствие повторного POST.
++4. Проверить реальную актуализацию «Мои мероприятия», возврат после Google, сохранение входа и регрессии индивидуальных операций.
++5. Проверить в iPhone Safari подсказки при клавиатуре и прокрутке; RU/ES/EN, `/app/` и deep link, отсутствие ошибок загрузки assets.
++6. После успешного CI — обычный merge/deploy через конвейер. В ответе дать PR и ссылку успешного deploy. Не объявлять доступным до проверки deployed bundle.
++
++## Проверка заказчиком после успешного деплоя
++
++Открыть https://1-padel.com/app/, обновить страницу, войти, выбрать парный Team Americano. Кнопка должна открывать внутренний экран с тремя вариантами. Проверить свою согласованную пару и результат в «Мои мероприятия». Реальные действия с другими участниками выполнять только с их договорённостью.

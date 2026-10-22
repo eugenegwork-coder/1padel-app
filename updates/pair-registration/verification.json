@@ -1,0 +1,21 @@
+{
+  "clientTests": {
+    "passed": 78,
+    "failed": 0
+  },
+  "typecheck": "passed",
+  "siteExport": "passed",
+  "javaTests": "not run: no JDK",
+  "authorizedProductionEndToEnd": "not run",
+  "realMutationsSent": 0,
+  "uiViewport": {
+    "width": 390,
+    "height": 844
+  },
+  "uiScenarios": [
+    "existing partner confirmed",
+    "new partner without email added in reserve",
+    "changed price: zero POST",
+    "lost response: one POST then GET reconciliation"
+  ]
+}

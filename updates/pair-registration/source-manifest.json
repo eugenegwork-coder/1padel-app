@@ -1,0 +1,85 @@
+{
+  "base": "df81c33e3f4afb5aef3877e746d4977a7c252a9c",
+  "files": [
+    {
+      "path": "mobile-app/App.js",
+      "sha256": "36f950978a377e739c076670ceb6448a70c261e57f0a67fb400aa87690900cb1",
+      "new": false
+    },
+    {
+      "path": "mobile-app/src/AuthContext.tsx",
+      "sha256": "22d1a16ebba9cc5ec2b70e8b57084a49bf8f7b28d3aebdbd5358841245f02c31",
+      "new": false
+    },
+    {
+      "path": "mobile-app/src/BookingEntry.tsx",
+      "sha256": "22e33551ca11c32a89d4eb548be14e79d8b3d0e84aa452f04e09270563fb1374",
+      "new": true
+    },
+    {
+      "path": "mobile-app/src/MyEventsScreen.tsx",
+      "sha256": "9b063a05458413d8e8d9ed770b03c0e55fa3eb84c3ac9eb07a4153ee04a107a1",
+      "new": false
+    },
+    {
+      "path": "mobile-app/src/PairBookingLab.tsx",
+      "sha256": "142f096c0644faaf3d5a2706aebfe0831bd9470678c234f12bad4e7107a6f088",
+      "new": true
+    },
+    {
+      "path": "mobile-app/src/PairBookingScreen.tsx",
+      "sha256": "ab77e5ecbc3b0ad282c49d764f6f83afb6714eeaa7344d9fcdf1f21b8394db4b",
+      "new": true
+    },
+    {
+      "path": "mobile-app/src/PlayerScreen.tsx",
+      "sha256": "96a2ce3cab95753f35fb9d191b6e90582bf660b80a2b1f079e44af16a4f4260b",
+      "new": false
+    },
+    {
+      "path": "mobile-app/src/auth.ts",
+      "sha256": "25a0418f1733c9c5b0eccf4184757839e83b147ba43e2d776952bc91832725de",
+      "new": false
+    },
+    {
+      "path": "mobile-app/src/pairBooking.ts",
+      "sha256": "5d1714c0241495f6141f57fab6b89d3eea1e8eca58b7443e19641de823a66622",
+      "new": true
+    },
+    {
+      "path": "mobile-app/src/pairCopy.ts",
+      "sha256": "fb475b62db16afbb784f9e7f3231f84b1f65b09188979ecdcf43f41d51a1bf75",
+      "new": true
+    },
+    {
+      "path": "mobile-app/src/sharedEvent.ts",
+      "sha256": "4c0c71b61d33fe763edabbc142520de2b8f00266610dcd370e3fc8a026d4c73f",
+      "new": true
+    },
+    {
+      "path": "mobile-app/tests/authMutations.test.mjs",
+      "sha256": "06c755b7e4505a9a60da2e06bad31cf64c5c93c4dd1295133018ab62925f9b37",
+      "new": false
+    },
+    {
+      "path": "mobile-app/tests/pairBooking.test.mjs",
+      "sha256": "f2e51b5e52f1905f618cc60017b1d6ee6c174b275767366cc3e2abae89451141",
+      "new": true
+    },
+    {
+      "path": "src/main/java/com/padle/core/padelcoreservice/controller/player/PlayerDashboardController.java",
+      "sha256": "4ac471b5932708b25b74678ce4528788cfa7cc44b07464579fde57cd86247924",
+      "new": false
+    },
+    {
+      "path": "src/test/java/com/padle/core/padelcoreservice/controller/player/PlayerOwnPairSnapshotTest.java",
+      "sha256": "0ca743de512386c4607aaf44f16040296ccd5fc8294fb35e3b8d4f6f7b8564a6",
+      "new": true
+    },
+    {
+      "path": "docs/mobile-pair-booking.md",
+      "sha256": "c3afabe738f60b67dc4f3341e72bd2578a7668989758feeaef24ed6770c455a0",
+      "new": true
+    }
+  ]
+}
