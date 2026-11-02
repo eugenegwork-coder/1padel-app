@@ -1,34 +1,27 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Linking, Platform } from 'react-native';
+import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
-import * as Crypto from 'expo-crypto';
-import { AuthError, createAuthClient } from './auth';
+import { AuthError, createAuthClient, parseSessionFragment } from './auth';
 import type { Profile } from './auth';
+import { createNativeSessionStore, createWebSessionStore } from './sessionStore';
+import { createIndividualBooking } from './individualBooking';
+import { createPairBooking } from './pairBooking';
+import { createScheduleClient } from './schedule';
+import { runtimeConfig } from './runtimeConfig';
 
-const secureKey = 'onepadel.refresh.v1';
+const secureKey = runtimeConfig.sessionKey;
 export const secureAuthContext = Platform.OS !== 'web' || (typeof window !== 'undefined' && (window.location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(window.location.hostname)));
-const store = {
-  async get() { return Platform.OS === 'web' ? null : SecureStore.getItemAsync(secureKey); },
-  async set(token: string | null) {
-    if (Platform.OS === 'web') return; // Браузерные токены только в памяти текущей вкладки.
-    if (token) await SecureStore.setItemAsync(secureKey, token, { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY });
-    else await SecureStore.deleteItemAsync(secureKey);
-  },
-};
-function base64url(bytes: Uint8Array) {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  let out = '';
-  for (let i = 0; i < bytes.length; i += 3) {
-    const n = (bytes[i] << 16) | ((bytes[i + 1] ?? 0) << 8) | (bytes[i + 2] ?? 0);
-    out += alphabet[n >>> 18] + alphabet[n >>> 12 & 63];
-    if (i + 1 < bytes.length) out += alphabet[n >>> 6 & 63];
-    if (i + 2 < bytes.length) out += alphabet[n & 63];
-  }
-  return out.replace(/\+/g, '-').replace(/\//g, '_');
-}
+// Веб: refresh-токен в localStorage переживает закрытие/повторное открытие вкладки (LFPT-0646) —
+// только за гейтом secureAuthContext (HTTPS/localhost), как и сам вход.
+// Native: без изменений, SecureStore.
+const store = Platform.OS === 'web'
+  ? createWebSessionStore(secureAuthContext && typeof window !== 'undefined' ? window.localStorage : null, secureKey)
+  : createNativeSessionStore(SecureStore, secureKey, SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY);
+
 type Auth = { profile: Profile | null; restoring: boolean; restoreError: string | null; googleCode: string | null;
   login: (email: string, password: string) => Promise<void>; google: () => Promise<void>; cancelGoogle: () => void;
-  logout: () => Promise<void>; retryRestore: () => Promise<void>; client: ReturnType<typeof createAuthClient> };
+  logout: () => Promise<void>; retryRestore: () => Promise<void>; client: ReturnType<typeof createAuthClient>; booking: ReturnType<typeof createIndividualBooking>;
+  pairBooking: ReturnType<typeof createPairBooking> };
 const Context = createContext<Auth | null>(null);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -36,10 +29,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [googleCode, setGoogleCode] = useState<string | null>(null);
   const attempt = useRef(0);
-  const client = useMemo(() => createAuthClient({ store, baseUrl: Platform.OS === 'web' && typeof window !== 'undefined' && window.location.protocol === 'https:' && ['1-padel.com', 'www.1-padel.com'].includes(window.location.hostname) ? window.location.origin : 'https://1-padel.com', onExpired: () => setProfile(null) }), []);
+  const client = useMemo(() => createAuthClient({ store, baseUrl: runtimeConfig.apiBaseUrl, onExpired: () => setProfile(null) }), []);
+  // Отдельная модель записи на каждый аккаунт: неопределённый запрос одного игрока
+  // не должен влиять на другого после выхода и смены аккаунта.
+  const booking = useMemo(() => {
+    const baseUrl = runtimeConfig.apiBaseUrl;
+    const schedule = createScheduleClient({ baseUrl });
+    return createIndividualBooking({ ...client, details: id => schedule.details(id, 'es') });
+  }, [client, profile?.id]);
+  // LFPT-0707: misma idea que booking — un modelo de mutación por cuenta, aislado de otra sesión.
+  const pairBooking = useMemo(() => {
+    const baseUrl = runtimeConfig.apiBaseUrl;
+    const schedule = createScheduleClient({ baseUrl });
+    return createPairBooking({ ...client, details: id => schedule.details(id, 'es') });
+  }, [client, profile?.id]);
   const retryRestore = useCallback(async () => {
     setRestoring(true); setRestoreError(null);
-    try { setProfile(await client.restore()); }
+    try {
+      // Возврат после входа через Google: сервер кладёт токены во fragment /app/#accessToken=... (LFPT-0637).
+      // Сразу убираем их из адресной строки, чтобы не остались в истории и закладках.
+      const returned = Platform.OS === 'web' && typeof window !== 'undefined' ? parseSessionFragment(window.location.hash) : null;
+      if (returned) window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      setProfile(returned ? await client.adopt(returned) : await client.restore());
+    }
     catch (error) { if (error instanceof AuthError && !['SESSION_EXPIRED', 'ACCOUNT_UNAVAILABLE', 'CANCELLED'].includes(error.code)) setRestoreError(error.code); }
     finally { setRestoring(false); }
   }, [client]);
@@ -47,36 +59,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const cancelGoogle = useCallback(() => { attempt.current++; client.cancelPending(); setGoogleCode(null); }, [client]);
   async function google() {
     if (!secureAuthContext) throw new AuthError('INSECURE');
-    // Открываем вкладку синхронно с нажатием, иначе Safari блокирует popup.
-    const popup = Platform.OS === 'web' ? window.open('about:blank', '_blank') : null;
-    const current = ++attempt.current;
-    try {
-      if (Platform.OS === 'web' && !popup) throw new AuthError('POPUP_BLOCKED');
-      const verifier = base64url(await Crypto.getRandomBytesAsync(32));
-      const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, verifier, { encoding: Crypto.CryptoEncoding.BASE64 });
-      const challenge = digest.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-      const start = await client.startGoogle(challenge);
-      if (current !== attempt.current) throw new AuthError('CANCELLED');
-      setGoogleCode(start.requestId.slice(0, 8));
-      if (popup) { popup.opener = null; popup.location.href = start.browserUrl; }
-      else await Linking.openURL(start.browserUrl);
-      const deadline = Date.now() + start.expiresIn * 1000;
-      while (Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        if (current !== attempt.current) throw new AuthError('CANCELLED');
-        const next = await client.exchangeGoogle(start.requestId, verifier);
-        if (current !== attempt.current) throw new AuthError('CANCELLED');
-        if (next) { setProfile(next); return; }
-        if (popup?.closed) throw new AuthError('CANCELLED');
-      }
-      throw new AuthError('LOGIN_REQUEST_EXPIRED');
-    } finally { if (current === attempt.current) setGoogleCode(null); if (popup && !popup.closed) popup.close(); }
+    // Вход через Google — серверный redirect-флоу сайта: страница уходит на Google и возвращается на /app/.
+    // В нативном приложении вернуть токены из браузера пока некуда — только веб-версия.
+    if (!runtimeConfig.googleAvailable) throw new AuthError('UNAVAILABLE');
+    cancelGoogle();
+    window.location.assign(client.googleUrl());
+    await new Promise<never>(() => {});
   }
   async function login(email: string, password: string) {
     if (!secureAuthContext) throw new AuthError('INSECURE');
     cancelGoogle(); setRestoreError(null); setProfile(await client.login(email, password));
   }
   async function logout() { cancelGoogle(); await client.logout(); setProfile(null); }
-  return <Context.Provider value={{ profile, restoring, restoreError, googleCode, login, google, cancelGoogle, logout, retryRestore, client }}>{children}</Context.Provider>;
+  return <Context.Provider value={{ profile, restoring, restoreError, googleCode, login, google, cancelGoogle, logout, retryRestore, client, booking, pairBooking }}>{children}</Context.Provider>;
 }
 export function useAuth() { const value = useContext(Context); if (!value) throw new Error('AuthProvider required'); return value; }

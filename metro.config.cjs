@@ -1,7 +1,8 @@
 const { getDefaultConfig } = require('expo/metro-config');
+const { resolveBackend } = require('./config/backend.cjs');
 
 const config = getDefaultConfig(__dirname);
-const upstream = (process.env.PADEL_API_UPSTREAM || 'https://1-padel.com').replace(/\/+$/, '');
+const upstream = resolveBackend({ apiBaseUrl: process.env.EXPO_PUBLIC_API_BASE_URL }).apiBaseUrl;
 
 // Только чтение расписания. Куки/токены браузера на внешний сервер не передаются.
 config.server.enhanceMiddleware = (middleware) => async (request, response, next) => {

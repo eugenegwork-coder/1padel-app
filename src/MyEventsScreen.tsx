@@ -8,6 +8,9 @@ import type { Language } from './schedule';
 import { authErrorText } from './LoginScreen';
 import { messages } from './copy';
 import { colors } from './theme';
+import { isIndividualEvent } from './individualBooking';
+import { bookingCopy } from './bookingCopy';
+import CancelBookingPanel from './CancelBookingPanel';
 const copy: Record<Language, Record<string, string>> = {
   "ru": {
     "title": "Мои мероприятия",
@@ -97,12 +100,14 @@ const copy: Record<Language, Record<string, string>> = {
 export default function MyEventsScreen({ language, onBrowse }: { language: Language; onBrowse: () => void }) {
   const auth = useAuth();
   const t = copy[language];
+  const bt = bookingCopy[language];
   const [data, setData] = useState<Registration[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [history, setHistory] = useState(false);
   const [revision, setRevision] = useState(0);
   const [logoutError, setLogoutError] = useState(false);
+  const [cancelling, setCancelling] = useState<number | null>(null);
   useEffect(() => {
     let alive = true;
     setLoading(true); setError(null);
@@ -110,10 +115,12 @@ export default function MyEventsScreen({ language, onBrowse }: { language: Langu
     return () => { alive = false; };
   }, [auth.client, auth.profile?.id, revision]);
   const rows = useMemo(() => (data ?? []).filter(item => {
-    const past = Date.parse(item.event.startsAt) < Date.now() || !item.active || ['CANCELLED', 'SOLO_EXPIRED', 'PARTICIPATED'].includes(item.status) || ['FINALIZADO', 'CANCELADO', 'CERRADO'].includes(item.event.status);
+    const past = item.status === null || Date.parse(item.event.startsAt) < Date.now() || !item.active || ['CANCELLED', 'SOLO_EXPIRED', 'PARTICIPATED'].includes(item.status) || ['FINALIZADO', 'CANCELADO', 'CERRADO'].includes(item.event.status);
     return history === past;
   }).sort((a, b) => (history ? -1 : 1) * (Date.parse(a.event.startsAt) - Date.parse(b.event.startsAt))), [data, history]);
   async function logout() { try { await auth.logout(); } catch { setLogoutError(true); } }
+  // LFPT-0666: парная (DOBLES) отмена и отмена через приложение прошедших/неактивных записей остаются на сайте.
+  function cancellable(item: Registration) { return item.active && item.status !== null && ['CONFIRMED', 'WAITLIST'].includes(item.status) && isIndividualEvent(item.event); }
   return <ScrollView contentContainerStyle={styles.content}>
     <View style={styles.top}><View style={{ flex: 1 }}><Text accessibilityRole="header" style={styles.title}>{t.title}</Text><Text style={styles.subtitle}>{t.subtitle}</Text></View>
       <TouchableOpacity accessibilityRole="button" onPress={() => void logout()} style={styles.smallButton}><Text style={styles.link}>{t.logout}</Text></TouchableOpacity></View>
@@ -122,12 +129,14 @@ export default function MyEventsScreen({ language, onBrowse }: { language: Langu
     <View style={styles.segment}>{[false, true].map(value => <TouchableOpacity key={String(value)} accessibilityRole="tab" accessibilityState={{ selected: history === value }} onPress={() => setHistory(value)} style={[styles.segmentTab, history === value && styles.selected]}><Text style={styles.link}>{value ? t.history : t.upcoming}</Text></TouchableOpacity>)}</View>
     <TouchableOpacity accessibilityRole="button" disabled={loading} onPress={() => setRevision(value => value + 1)} style={styles.refresh}><Text style={styles.link}>{t.refresh} ↻</Text></TouchableOpacity>
     {loading ? <View style={styles.empty}><ActivityIndicator color={colors.orange} /><Text style={styles.subtitle}>{t.loading}</Text></View> : error ? <View style={styles.empty}><Text accessibilityRole="alert" style={styles.error}>{authErrorText(language, error)}</Text></View> : rows.length === 0 ? <View style={styles.empty}><Text style={styles.name}>{t.empty}</Text><Text style={styles.subtitle}>{t.emptyHint}</Text><TouchableOpacity accessibilityRole="button" onPress={onBrowse} style={styles.open}><Text style={styles.link}>{t.browse} ›</Text></TouchableOpacity></View> : rows.map(item => <View style={styles.card} key={item.registrationId}>
-      <Text style={[styles.status, ['WAITLIST', 'WAITLIST_INVITED'].includes(item.status) && styles.wait]}>{t[item.active ? item.status : 'CANCELLED'] ?? item.status}</Text>
+      {item.status !== null && <Text style={[styles.status, ['WAITLIST', 'WAITLIST_INVITED'].includes(item.status) && styles.wait]}>{t[item.active ? item.status : 'CANCELLED'] ?? item.status}</Text>}
       <Text style={styles.eventTitle}>{messages[language][item.event.type]}</Text>
       <Text style={styles.date}>{eventDate(item.event.startsAt, item.event.timeZone, language)}</Text>
       <Text style={styles.subtitle}>{item.event.club.name}</Text>
       {item.waitlistPosition != null && item.active && <Text style={styles.subtitle}>{t.waitPosition}: {item.waitlistPosition}</Text>}
       <View style={styles.bottom}><Text style={styles.price}>{eventPrice(item.event, language)}</Text><TouchableOpacity accessibilityRole="link" onPress={() => Linking.openURL(item.event.websiteUrl)} style={styles.open}><Text style={styles.link}>{t.open} ↗</Text></TouchableOpacity></View>
+      {cancellable(item) && cancelling !== item.event.id && <TouchableOpacity accessibilityRole="button" onPress={() => setCancelling(item.event.id)} style={styles.cancelLink}><Text style={[styles.link, styles.cancelLinkText]}>{bt.cancelAction}</Text></TouchableOpacity>}
+      {cancelling === item.event.id && <CancelBookingPanel tournamentId={item.event.id} booking={auth.booking} language={language} onClose={() => setCancelling(null)} onCancelled={() => { setCancelling(null); setRevision(value => value + 1); }} />}
     </View>)}
   </ScrollView>;
 }
@@ -143,4 +152,5 @@ const styles = StyleSheet.create({
   card: { borderRadius: 18, padding: 18, borderColor: colors.line, borderWidth: 1, backgroundColor: colors.white, marginBottom: 12 }, status: { color: colors.green, fontSize: 11, fontWeight: '800', alignSelf: 'flex-start', backgroundColor: colors.greenPale, borderRadius: 7, paddingHorizontal: 8, paddingVertical: 5 }, wait: { backgroundColor: colors.pale, color: '#98512F' },
   eventTitle: { color: colors.ink, fontSize: 21, lineHeight: 28, fontWeight: '800', marginTop: 12 }, date: { color: colors.ink, fontWeight: '600', fontSize: 14, marginTop: 8 },
   bottom: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 10 }, price: { color: colors.ink, fontSize: 13, fontWeight: '700' }, open: { minHeight: 44, justifyContent: 'center', paddingVertical: 8 },
+  cancelLink: { minHeight: 36, justifyContent: 'center', marginTop: 2 }, cancelLinkText: { color: '#A13F31' },
 });

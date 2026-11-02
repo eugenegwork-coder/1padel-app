@@ -5,6 +5,7 @@ import type { Language } from './schedule';
 import { AuthError } from './auth';
 import { secureAuthContext, useAuth } from './AuthContext';
 import { colors } from './theme';
+import { runtimeConfig } from './runtimeConfig';
 
 export const loginCopy = {
   "ru": {
@@ -172,10 +173,11 @@ export default function LoginScreen({ language, onClose, onBrowse, onSuccess }: 
       </View>
       <View style={styles.intro}><Text accessibilityRole="header" style={styles.title}>{t.title}</Text><Text style={styles.subtitle}>{t.subtitle}</Text></View>
       {!secureAuthContext && <View style={styles.feedback}><Text style={styles.feedbackText}>{t.insecure}</Text>
-        <TouchableOpacity accessibilityRole="link" onPress={() => Linking.openURL('https://1-padel.com/app/')} style={styles.guest}><Text style={styles.registerLink}>{t.secureLink}  ↗</Text></TouchableOpacity></View>}
-      <TouchableOpacity accessibilityRole="button" disabled={busy || auth.restoring || !secureAuthContext} accessibilityState={{ disabled: busy || auth.restoring || !secureAuthContext }} onPress={() => void signIn(true)} style={[styles.provider, !secureAuthContext && { opacity: 0.5 }]}>
+        <TouchableOpacity accessibilityRole="link" onPress={() => Linking.openURL(`${runtimeConfig.apiBaseUrl}/app/`)} style={styles.guest}><Text style={styles.registerLink}>{t.secureLink}  ↗</Text></TouchableOpacity></View>}
+      <TouchableOpacity accessibilityRole="button" disabled={busy || auth.restoring || !secureAuthContext || !runtimeConfig.googleAvailable} accessibilityState={{ disabled: busy || auth.restoring || !secureAuthContext || !runtimeConfig.googleAvailable }} onPress={() => void signIn(true)} style={[styles.provider, (!secureAuthContext || !runtimeConfig.googleAvailable) && { opacity: 0.5 }]}>
         <Image accessible={false} source={require('../assets/auth/google.png')} style={styles.providerIcon} /><Text style={styles.providerText}>{busy ? t.busy : t.google}</Text>
       </TouchableOpacity>
+      {!runtimeConfig.googleAvailable && <Text style={styles.feedbackText}>{({ ru: 'В этой версии вход через Google ещё не подключён. Используйте почту и пароль.', es: 'Google todavía no está conectado en esta versión. Usá tu correo y contraseña.', en: 'Google sign-in is not connected in this version yet. Use your email and password.' })[language]}</Text>}
       {auth.googleCode && <View style={styles.feedback}><Text style={styles.feedbackText}>{t.googleWait}</Text><Text selectable style={[styles.title, { fontSize: 24, marginTop: 10, letterSpacing: 3 }]}>{auth.googleCode}</Text>
         <TouchableOpacity accessibilityRole="button" onPress={auth.cancelGoogle} style={styles.guest}><Text style={styles.registerLink}>{t.cancel}</Text></TouchableOpacity></View>}
       <View style={styles.separator}><View style={styles.line} /><Text style={styles.separatorText}>{t.emailDivider}</Text><View style={styles.line} /></View>
@@ -184,7 +186,7 @@ export default function LoginScreen({ language, onClose, onBrowse, onSuccess }: 
         <TextInput accessibilityLabel={t.email} value={email} placeholder="name@example.com" placeholderTextColor="#92A098" editable={secureAuthContext && !busy && !auth.restoring}
           keyboardType="email-address" autoCapitalize="none" autoCorrect={false} autoComplete="email" textContentType="username"
           returnKeyType="next" onSubmitEditing={() => passwordInput.current?.focus()} onChangeText={value => { setEmail(value); setError(null); }} style={[styles.input, error === 'email' && styles.inputError]} />
-        <View style={styles.passwordLabel}><Text style={styles.label}>{t.password}</Text><TouchableOpacity accessibilityRole="link" onPress={() => Linking.openURL('https://1-padel.com/recuperar-password')} style={styles.forgotButton}><Text style={styles.forgotText}>{t.forgot}</Text></TouchableOpacity></View>
+        <View style={styles.passwordLabel}><Text style={styles.label}>{t.password}</Text><TouchableOpacity accessibilityRole="link" onPress={() => Linking.openURL(`${runtimeConfig.apiBaseUrl}/recuperar-password`)} style={styles.forgotButton}><Text style={styles.forgotText}>{t.forgot}</Text></TouchableOpacity></View>
         <View style={[styles.passwordField, error === 'password' && styles.inputError]}>
           <TextInput ref={passwordInput} accessibilityLabel={t.password} value={password} placeholder="••••••••" placeholderTextColor="#92A098" editable={secureAuthContext && !busy && !auth.restoring}
             autoCapitalize="none" autoCorrect={false} autoComplete="current-password" textContentType="password" secureTextEntry={!showPassword}
@@ -195,7 +197,7 @@ export default function LoginScreen({ language, onClose, onBrowse, onSuccess }: 
         {auth.restoreError && <TouchableOpacity accessibilityRole="button" onPress={() => void auth.retryRestore()} style={styles.guest}><Text style={styles.guestText}>{t.restore}</Text></TouchableOpacity>}
         <TouchableOpacity accessibilityRole="button" disabled={busy || auth.restoring || !secureAuthContext} accessibilityState={{ disabled: busy || auth.restoring || !secureAuthContext }} onPress={() => void signIn(false)} style={[styles.submit, (busy || auth.restoring || !secureAuthContext) && { opacity: 0.5 }]}><Text style={styles.submitText}>{busy ? t.busy : t.signIn}</Text></TouchableOpacity>
       </View>
-      <View style={styles.registerRow}><Text style={styles.registerText}>{t.newAccount}</Text><TouchableOpacity accessibilityRole="link" onPress={() => Linking.openURL('https://1-padel.com/players/registro')} style={styles.registerButton}><Text style={styles.registerLink}>{t.createAccount}</Text></TouchableOpacity></View>
+      <View style={styles.registerRow}><Text style={styles.registerText}>{t.newAccount}</Text><TouchableOpacity accessibilityRole="link" onPress={() => Linking.openURL(`${runtimeConfig.apiBaseUrl}/players/registro`)} style={styles.registerButton}><Text style={styles.registerLink}>{t.createAccount}</Text></TouchableOpacity></View>
       <TouchableOpacity accessibilityRole="button" onPress={() => close(onBrowse)} style={styles.guest}><Text style={styles.guestText}>{t.guest}  ›</Text></TouchableOpacity>
       <Text style={styles.previewNote}>{t.note}</Text>
     </ScrollView>

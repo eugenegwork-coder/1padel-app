@@ -1,5 +1,9 @@
 node_modules/
 .expo/
 dist/
+dist-*/
+.env*
+!.env.example
+*.log
 preview/
 dist-auth-*/
