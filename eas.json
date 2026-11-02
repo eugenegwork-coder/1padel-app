@@ -1,0 +1,20 @@
+{
+  "cli": { "appVersionSource": "remote" },
+  "build": {
+    "preview": {
+      "distribution": "internal",
+      "environment": "preview",
+      "env": { "EXPO_PUBLIC_API_BASE_URL": "https://1-padel.com" }
+    },
+    "simulator": {
+      "extends": "preview",
+      "ios": { "simulator": true }
+    },
+    "testflight": {
+      "distribution": "store",
+      "environment": "preview",
+      "autoIncrement": true,
+      "env": { "EXPO_PUBLIC_API_BASE_URL": "https://1-padel.com" }
+    }
+  }
+}

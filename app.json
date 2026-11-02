@@ -4,6 +4,11 @@
     "slug": "one-padel-mobile",
     "scheme": "onepadel",
     "version": "0.1.0",
+    "extra": {
+      "eas": {
+        "projectId": "d2b8a5d1-ae2d-48d7-ab18-9a8b78c20961"
+      }
+    },
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "ios": {
