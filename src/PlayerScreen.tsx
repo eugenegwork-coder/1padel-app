@@ -10,6 +10,7 @@ import { colors as palette } from './theme';
 import { isIndividualEvent } from './individualBooking';
 import { isPairAmericanoEvent } from './pairBooking';
 import { bookingCopy } from './bookingCopy';
+import ParticipantsCard from './ParticipantsCard';
 import { runtimeConfig } from './runtimeConfig';
 
 const isFixture = process.env.EXPO_PUBLIC_PREVIEW_MODE === 'fixtures';
@@ -107,7 +108,7 @@ function Availability({ event, language }: { event: PublicTournament; language: 
   </View>;
 }
 
-export default function PlayerScreen({ language, onBook, onBookPair }: { language: Language; onBook?: (event: PublicTournament) => void; onBookPair?: (event: PublicTournament) => void }) {
+export default function PlayerScreen({ language, onBook, onBookPair, refreshRevision = 0 }: { language: Language; onBook?: (event: PublicTournament) => void; onBookPair?: (event: PublicTournament) => void; refreshRevision?: number }) {
   const t = messages[language];
   const client = useMemo(() => createScheduleClient({ baseUrl: apiBase }), []);
   const [filters, setFilters] = useState<ScheduleFilters>({ ...defaultFilters });
@@ -122,6 +123,7 @@ export default function PlayerScreen({ language, onBook, onBookPair }: { languag
   const list = useResource(loadList);
   const loadDetail = useMemo(() => selectedId === null ? null : (signal: AbortSignal) => client.details(selectedId, language, signal), [client, selectedId, language]);
   const detail = useResource(loadDetail);
+  useEffect(() => { if (refreshRevision > 0) { list.retry(); detail.retry(); } }, [refreshRevision]);
   const resource = selectedId === null ? list : detail;
   const events = list.data ?? [];
   const filtered = filterSchedule(events, filters);
@@ -183,6 +185,7 @@ export default function PlayerScreen({ language, onBook, onBookPair }: { languag
             <Text style={styles.deadlineText}>{eventDate(event.cancellationDeadline, event.timeZone, language)}</Text>
           </View>}
         </View>
+        <ParticipantsCard key={event.id} value={event.participants} language={language} onWebsite={() => openWebsite(event.websiteUrl)} />
         {event.description && <View style={styles.infoCard}>
           <Text style={styles.sectionTitle}>{t.about}</Text>
           <Text numberOfLines={descriptionExpanded ? undefined : 5} style={styles.description}>{event.description}</Text>

@@ -25,6 +25,7 @@ export interface PublicTournament {
   cancellationDeadline: string | null;
   description: string | null;
   websiteUrl: string;
+  participants?: unknown;
 }
 
 export class ScheduleError extends Error {
