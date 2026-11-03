@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { createScheduleClient, eventDate, eventPrice, ScheduleError, tournamentTypes } from './schedule';
 import type { Language, PublicTournament } from './schedule';
@@ -11,6 +11,7 @@ import { isIndividualEvent } from './individualBooking';
 import { isPairAmericanoEvent } from './pairBooking';
 import { bookingCopy } from './bookingCopy';
 import ParticipantsCard from './ParticipantsCard';
+import { availabilityStatus } from './availabilityStatus';
 import { runtimeConfig } from './runtimeConfig';
 
 const isFixture = process.env.EXPO_PUBLIC_PREVIEW_MODE === 'fixtures';
@@ -83,28 +84,16 @@ function dateParts(event: PublicTournament, language: Language) {
   };
 }
 
-function freeSpots(event: PublicTournament, language: Language) {
-  const count = event.available;
-  if (language === 'ru') {
-    const form = new Intl.PluralRules('ru').select(count);
-    const words = event.capacityUnit === 'PAIRS'
-      ? { one: 'пара', few: 'пары', many: 'пар', other: 'пары' }
-      : { one: 'место', few: 'места', many: 'мест', other: 'места' };
-    return `${count} ${words[form as keyof typeof words] ?? words.other}`;
-  }
-  if (language === 'es') return `${count} ${event.capacityUnit === 'PAIRS' ? count === 1 ? 'pareja' : 'parejas' : count === 1 ? 'cupo' : 'cupos'}`;
-  return `${count} ${event.capacityUnit === 'PAIRS' ? count === 1 ? 'pair' : 'pairs' : count === 1 ? 'spot' : 'spots'}`;
-}
-
 function Availability({ event, language }: { event: PublicTournament; language: Language }) {
   const t = messages[language];
-  const open = event.registrationOpen && event.status !== 'PUBLICADO';
-  const scarce = open && event.available > 0 && event.available <= 3;
-  const full = open && event.available === 0;
-  const label = event.status === 'PUBLICADO' ? t.published : !open ? t.closed : full ? t.waitlistShort : `${t.free}: ${freeSpots(event, language)}`;
-  return <View style={[styles.availability, scarce && styles.scarce, (!open || full) && styles.unavailable]}>
-    <View style={[styles.statusDot, scarce && { backgroundColor: palette.amber }, (!open || full) && { backgroundColor: palette.muted }]} />
-    <Text style={[styles.availabilityText, scarce && { color: palette.amber }, (!open || full) && { color: palette.muted }]}>{label}</Text>
+  const status = availabilityStatus(event);
+  const scarce = status === 'limited';
+  const unavailable = status === 'published' || status === 'closed' || status === 'reserve';
+  const label = status === 'published' ? t.published : status === 'closed' ? t.closed
+    : status === 'reserve' ? t.waitlistShort : status === 'limited' ? t.lastSpots : t.spotsAvailable;
+  return <View style={[styles.availability, scarce && styles.scarce, unavailable && styles.unavailable]}>
+    <View style={[styles.statusDot, scarce && { backgroundColor: palette.amber }, unavailable && { backgroundColor: palette.muted }]} />
+    <Text style={[styles.availabilityText, scarce && { color: palette.amber }, unavailable && { color: palette.muted }]}>{label}</Text>
   </View>;
 }
 
@@ -142,6 +131,12 @@ export default function PlayerScreen({ language, onBook, onBookPair, refreshRevi
   function inlineBookable(event: PublicTournament) {
     return isIndividualEvent(event) && !!onBook || isPairAmericanoEvent(event) && !!onBookPair;
   }
+  function bookingActionTitle(event: PublicTournament) {
+    const status = availabilityStatus(event);
+    if (status === 'published' || status === 'closed') return t.openEvent;
+    if (status === 'reserve') return inlineBookable(event) ? bookingCopy[language].waitInline : t.waitlist;
+    return inlineBookable(event) ? bookingCopy[language].openInline : t.book;
+  }
 
   function resourceContent() {
     if (resource.loading || (selectedId !== null && detail.data !== null && detail.data.id !== selectedId)) return <View style={styles.state}>
@@ -159,7 +154,6 @@ export default function PlayerScreen({ language, onBook, onBookPair, refreshRevi
     if (selected) {
       const event = selected;
       const dates = dateParts(event, language);
-      const unit = event.capacityUnit === 'PAIRS' ? t.pairs : t.players;
       return <>
         <View style={styles.detailHero}>
           <Text accessibilityRole="header" style={styles.title}>{t[event.type]}</Text>
@@ -178,8 +172,6 @@ export default function PlayerScreen({ language, onBook, onBookPair, refreshRevi
             <View style={styles.gridCell}><Fact title={t.entry} value={event.modality === 'DOBLES' ? t.doubles : t.single} /></View>
             {event.duration && <View style={styles.gridCell}><Fact title={t.duration} value={durationLabel(event.duration, language)} /></View>}
           </View>
-          <Fact title={t.availability} value={`${event.occupied} / ${event.capacity} ${unit}`} />
-          {event.waitlistCount > 0 && <Fact title={t.reserve} value={String(event.waitlistCount)} />}
           {event.cancellationDeadline && <View style={styles.deadline}>
             <Text style={styles.caption}>{t.cancellation}</Text>
             <Text style={styles.deadlineText}>{eventDate(event.cancellationDeadline, event.timeZone, language)}</Text>
@@ -263,15 +255,16 @@ export default function PlayerScreen({ language, onBook, onBookPair, refreshRevi
       <View style={styles.bookingInner}>
         <View style={styles.bookingRow}>
           <View style={styles.bookingPrice}><Text style={styles.caption}>{t.priceFrom}</Text><Text style={styles.detailPrice}>{eventPrice(selected, language)}</Text></View>
-          <View style={styles.bookingAction}><Action title={selected.registrationOpen ? inlineBookable(selected) ? selected.available > 0 ? bookingCopy[language].openInline : bookingCopy[language].waitInline : selected.available > 0 ? t.book : t.waitlist : t.openEvent}
+          <View style={styles.bookingAction}><Action title={bookingActionTitle(selected)}
             disabled={isFixture} onPress={() => {
-              if (!selected.registrationOpen) { void openWebsite(selected.websiteUrl); return; }
+              const status = availabilityStatus(selected);
+              if (status === 'published' || status === 'closed') { void openWebsite(selected.websiteUrl); return; }
               if (isIndividualEvent(selected) && onBook) onBook(selected);
               else if (isPairAmericanoEvent(selected) && onBookPair) onBookPair(selected);
               else void openWebsite(selected.websiteUrl);
             }} /></View>
         </View>
-        <Text style={styles.bookingNote}>{inlineBookable(selected) ? bookingCopy[language].inlineNote : t.siteNote}</Text>
+        <Text style={styles.bookingNote}>{inlineBookable(selected) && selected.registrationOpen && selected.status !== 'PUBLICADO' ? bookingCopy[language].inlineNote : t.siteNote}</Text>
       </View>
     </View>}
     <Modal visible={filterVisible} transparent animationType="slide" onRequestClose={() => setFilterVisible(false)}>

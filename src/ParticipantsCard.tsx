@@ -16,7 +16,7 @@ export default function ParticipantsCard({ value, language, onWebsite }: { value
     {!roster ? <><Text style={s.muted}>{t.unavailable}</Text><Pressable accessibilityRole="link" onPress={onWebsite} style={s.button}><Text style={s.link}>{t.website}</Text></Pressable></> : <>
       {roster.confirmed.length === 0 && <Text style={s.muted}>{t.empty}</Text>}
       {(['confirmed', 'waitlist'] as const).map(group => <View key={group}>
-        {group === 'waitlist' && roster[group].length > 0 && <Text accessibilityRole="header" style={s.subtitle}>{t.reserve} · {roster[group].length}</Text>}
+        {group === 'waitlist' && roster[group].length > 0 && <Text accessibilityRole="header" style={s.subtitle}>{t.reserve}</Text>}
         {(expanded ? roster[group] : roster[group].slice(0, 6)).map((entry, index) => <View key={entry.id} style={s.row}>
           <Text style={s.number}>{index + 1}</Text><View style={s.names}>{entry.names.map((name, i) => <Text key={i} style={s.name}>{name}</Text>)}{entry.seekingPartner && <Text style={s.muted}>{t.seeking}</Text>}</View>
         </View>)}
