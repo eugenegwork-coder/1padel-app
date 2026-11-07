@@ -82,19 +82,25 @@ export const messages = {
 } satisfies Record<Language, Record<string, string>>;
 
 export const organizerMessages = {
-  ru: { kicker: 'ОРГАНИЗАТОРУ', title: 'Управление матчем', subtitle: 'Тестовый матч King of Court.',
-    notice: 'Локальная демонстрация', note: 'Имена вымышленные. Результат хранится до закрытия приложения и не меняет турнир на сайте.',
-    round: 'РАУНД 1 · КОРТ 1', saved: 'Внесён', pending: 'Ожидает', pairA: 'Пара A', pairB: 'Пара B', winners: 'Победившая пара',
-    score: 'Очки победителей из 21', loser: 'Очки второй пары', save: 'Сохранить результат', update: 'Обновить результат',
-    clear: 'Очистить пример', table: 'Таблица турнира', rule: 'Очки каждого игрока: очки матча + бонус корта.', invalid: 'Укажите целое число от 11 до 21.' },
-  es: { kicker: 'ORGANIZADOR', title: 'Gestionar un partido', subtitle: 'Partido de prueba de King of Court.',
-    notice: 'Demostración local', note: 'Los nombres son ficticios. El resultado se guarda hasta cerrar la app y no modifica el torneo del sitio.',
-    round: 'RONDA 1 · CANCHA 1', saved: 'Guardado', pending: 'Pendiente', pairA: 'Pareja A', pairB: 'Pareja B', winners: 'Pareja ganadora',
-    score: 'Puntos ganadores de 21', loser: 'Puntos de la otra pareja', save: 'Guardar resultado', update: 'Actualizar resultado',
-    clear: 'Borrar ejemplo', table: 'Tabla del torneo', rule: 'Puntos de cada jugador: puntos del partido + bonus de cancha.', invalid: 'Ingresá un número entero entre 11 y 21.' },
-  en: { kicker: 'ORGANIZER', title: 'Manage a match', subtitle: 'A test King of Court match.',
-    notice: 'Local demonstration', note: 'Fictional players. The result lasts until the app closes and does not change a tournament on the website.',
-    round: 'ROUND 1 · COURT 1', saved: 'Saved', pending: 'Pending', pairA: 'Pair A', pairB: 'Pair B', winners: 'Winning pair',
-    score: 'Winners’ points out of 21', loser: 'Other pair’s points', save: 'Save result', update: 'Update result',
-    clear: 'Clear example', table: 'Tournament standings', rule: 'Each player: match points + court bonus.', invalid: 'Enter a whole number from 11 to 21.' },
+  ru: {
+    kicker: 'ОРГАНИЗАТОРУ',
+    title: 'Управление турнирами',
+    subtitle: 'Откройте панель организатора, чтобы продолжить турнир, внести результаты или восстановить версию из истории. Войдите под аккаунтом организатора.',
+    open: 'Открыть панель организатора',
+    error: 'Не удалось открыть панель. Попробуйте ещё раз.',
+  },
+  es: {
+    kicker: 'ORGANIZADOR',
+    title: 'Gestioná tus torneos',
+    subtitle: 'Abrí el panel para continuar un torneo, cargar resultados o restaurar una versión del historial. Ingresá con tu cuenta de organizador.',
+    open: 'Abrir el panel de torneos',
+    error: 'No pudimos abrir el panel. Volvé a intentar.',
+  },
+  en: {
+    kicker: 'ORGANIZER',
+    title: 'Manage tournaments',
+    subtitle: 'Open the organizer dashboard to continue a tournament, enter scores or restore a version from its history. Sign in with your organizer account.',
+    open: 'Open organizer dashboard',
+    error: 'Could not open the dashboard. Try again.',
+  },
 } satisfies Record<Language, Record<string, string>>;
